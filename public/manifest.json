@@ -1,0 +1,17 @@
+{
+  "name": "Mega Tic Tac Toe",
+  "short_name": "Mega TTT",
+  "description": "Strategic multiplayer board game with powers and large grids",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F6F3",
+  "theme_color": "#F7F6F3",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

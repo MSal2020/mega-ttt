@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1a1a1a"/>
+  <g transform="translate(96, 96)">
+    <!-- 4x4 grid of dots -->
+    <circle cx="40" cy="40" r="24" fill="#4A7BF7"/>
+    <circle cx="120" cy="40" r="24" fill="#F25C54"/>
+    <circle cx="200" cy="40" r="24" fill="#4A7BF7"/>
+    <circle cx="280" cy="40" r="24" fill="#4DAA6D"/>
+
+    <circle cx="40" cy="120" r="24" fill="#F2A93B"/>
+    <circle cx="120" cy="120" r="24" fill="#4DAA6D"/>
+    <circle cx="200" cy="120" r="24" fill="#F25C54"/>
+    <circle cx="280" cy="120" r="24" fill="#4A7BF7"/>
+
+    <circle cx="40" cy="200" r="24" fill="#4A7BF7"/>
+    <circle cx="120" cy="200" r="24" fill="#F2A93B"/>
+    <circle cx="200" cy="200" r="24" fill="#4DAA6D"/>
+    <circle cx="280" cy="200" r="24" fill="#F25C54"/>
+
+    <circle cx="40" cy="280" r="24" fill="#F25C54"/>
+    <circle cx="120" cy="280" r="24" fill="#4A7BF7"/>
+    <circle cx="200" cy="280" r="24" fill="#F2A93B"/>
+    <circle cx="280" cy="280" r="24" fill="#4DAA6D"/>
+  </g>
+</svg>
