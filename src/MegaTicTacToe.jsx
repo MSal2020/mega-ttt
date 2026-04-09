@@ -94,7 +94,14 @@ function Setup({ onStart }) {
   const [gridSize, setGridSize] = useState(12);
   const [playerCount, setPlayerCount] = useState(2);
   const [powers, setPowers] = useState([0, 1, 2, 3]);
-  const wc = getWinConditions(gridSize, playerCount);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [customLineLen, setCustomLineLen] = useState(null);
+  const [customLinesNeeded, setCustomLinesNeeded] = useState(null);
+  const autoWc = getWinConditions(gridSize, playerCount);
+  const wc = {
+    lineLen: customLineLen ?? autoWc.lineLen,
+    linesNeeded: customLinesNeeded ?? autoWc.linesNeeded,
+  };
   const usedPowers = powers.slice(0, playerCount);
   const hasDupes = mode === "powers" && new Set(usedPowers).size < usedPowers.length;
 
@@ -169,8 +176,56 @@ function Setup({ onStart }) {
 
         <div style={{ marginTop: 22, background: "#FAFAF8", borderRadius: 10, padding: "12px 14px" }}>
           <div style={{ fontSize: 12, color: "#999", fontWeight: 500, marginBottom: 4 }}>Win condition</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{wc.lineLen} in a row{wc.linesNeeded > 1 ? `, ${wc.linesNeeded} times` : ""}</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>
+            {wc.lineLen} in a row{wc.linesNeeded > 1 ? `, ${wc.linesNeeded} times` : ""}
+            {(customLineLen !== null || customLinesNeeded !== null) && <span style={{ fontSize: 11, color: "#4A7BF7", marginLeft: 6 }}>custom</span>}
+          </div>
         </div>
+
+        <button onClick={() => setShowAdvanced(v => !v)} style={{
+          width: "100%", padding: "10px 0", border: "none", background: "none",
+          fontSize: 13, color: "#999", cursor: "pointer", fontFamily: "inherit",
+          marginTop: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+        }}>
+          <span style={{ transform: showAdvanced ? "rotate(90deg)" : "rotate(0)", transition: "transform 0.2s", display: "inline-block" }}>▸</span>
+          Advanced settings
+        </button>
+
+        {showAdvanced && (
+          <div style={{ background: "#FAFAF8", borderRadius: 10, padding: "14px", marginTop: 4 }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase" }}>Line length</div>
+                <span style={{ fontSize: 16, fontWeight: 700, color: customLineLen !== null ? "#4A7BF7" : "#1a1a1a" }}>{wc.lineLen}</span>
+              </div>
+              <input type="range" min={3} max={Math.min(gridSize, 8)} value={wc.lineLen}
+                onChange={e => { const v = +e.target.value; setCustomLineLen(v === autoWc.lineLen ? null : v); }}
+                style={{ width: "100%", cursor: "pointer" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#bbb", marginTop: 2 }}>
+                <span>3</span><span>{Math.min(gridSize, 8)}</span>
+              </div>
+            </div>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase" }}>Lines to win</div>
+                <span style={{ fontSize: 16, fontWeight: 700, color: customLinesNeeded !== null ? "#4A7BF7" : "#1a1a1a" }}>{wc.linesNeeded}</span>
+              </div>
+              <input type="range" min={1} max={5} value={wc.linesNeeded}
+                onChange={e => { const v = +e.target.value; setCustomLinesNeeded(v === autoWc.linesNeeded ? null : v); }}
+                style={{ width: "100%", cursor: "pointer" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#bbb", marginTop: 2 }}>
+                <span>1</span><span>5</span>
+              </div>
+            </div>
+            {(customLineLen !== null || customLinesNeeded !== null) && (
+              <button onClick={() => { setCustomLineLen(null); setCustomLinesNeeded(null); }} style={{
+                width: "100%", padding: 8, borderRadius: 8, border: "1.5px solid #E5E4E0",
+                background: "#fff", fontSize: 12, color: "#999", cursor: "pointer",
+                fontFamily: "inherit", marginTop: 10,
+              }}>Reset to default</button>
+            )}
+          </div>
+        )}
 
         <button onClick={() => !hasDupes && onStart({ mode, gridSize, playerCount, powers: powers.slice(0, playerCount), ...wc })}
           style={{
@@ -184,11 +239,12 @@ function Setup({ onStart }) {
   );
 }
 
-function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMode, zoom, ghostOwner }) {
+function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner }) {
   const n = board.length;
   const cellSize = Math.max(28, Math.round(zoom));
   const gap = 1;
   const containerRef = useRef(null);
+  const pinchRef = useRef(null);
 
   useEffect(() => {
     if (lastMove && containerRef.current) {
@@ -200,14 +256,115 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
     }
   }, [lastMove, cellSize]);
 
+  // Pinch-to-zoom
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onTouchStart = (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pinchRef.current = { dist: Math.hypot(dx, dy), zoom };
+      }
+    };
+    const onTouchMove = (e) => {
+      if (e.touches.length === 2 && pinchRef.current) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const scale = dist / pinchRef.current.dist;
+        const newZoom = Math.min(72, Math.max(20, pinchRef.current.zoom * scale));
+        onZoom(newZoom);
+      }
+    };
+    const onTouchEnd = () => { pinchRef.current = null; };
+    el.addEventListener("touchstart", onTouchStart, { passive: false });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd);
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [zoom, onZoom]);
+
   const winSet = new Set(winCells.map(([r,c]) => `${r},${c}`));
+
+  // Minimap
+  const miniRef = useRef(null);
+  const [miniState, setMiniState] = useState({ show: false, sl: 0, st: 0, sw: 0, sh: 0, cw: 0, ch: 0 });
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      const overflows = el.scrollWidth > el.clientWidth + 10 || el.scrollHeight > el.clientHeight + 10;
+      setMiniState({
+        show: overflows, sl: el.scrollLeft, st: el.scrollTop,
+        sw: el.scrollWidth, sh: el.scrollHeight, cw: el.clientWidth, ch: el.clientHeight,
+      });
+    };
+    update();
+    el.addEventListener("scroll", update);
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener("scroll", update); ro.disconnect(); };
+  }, [cellSize]);
+
+  useEffect(() => {
+    if (!miniState.show || !miniRef.current) return;
+    const canvas = miniRef.current;
+    const miniSize = 90;
+    canvas.width = miniSize; canvas.height = miniSize;
+    const ctx = canvas.getContext("2d");
+    const px = miniSize / n;
+    ctx.fillStyle = "#E5E4E0";
+    ctx.fillRect(0, 0, miniSize, miniSize);
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+      const cell = board[r][c];
+      if (cell && cell.wall) ctx.fillStyle = "#ccc";
+      else if (cell && !cell.wall && cell.visible !== false) ctx.fillStyle = PLAYERS[cell.owner].fill;
+      else ctx.fillStyle = "#fff";
+      ctx.fillRect(c * px + 0.5, r * px + 0.5, px - 1, px - 1);
+    }
+    // Viewport rect — use scrollWidth/scrollHeight to account for flex centering
+    const { sl, st, sw, sh, cw, ch } = miniState;
+    const vx = (sl / sw) * miniSize;
+    const vy = (st / sh) * miniSize;
+    const vw = (cw / sw) * miniSize;
+    const vh = (ch / sh) * miniSize;
+    ctx.strokeStyle = "rgba(74,123,247,0.8)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(vx, vy, Math.min(vw, miniSize), Math.min(vh, miniSize));
+  }, [miniState, board, n]);
+
+  const onMiniClick = useCallback((e) => {
+    const el = containerRef.current;
+    if (!el || !miniRef.current) return;
+    const rect = miniRef.current.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width;
+    const my = (e.clientY - rect.top) / rect.height;
+    el.scrollTo({
+      left: mx * el.scrollWidth - el.clientWidth / 2,
+      top: my * el.scrollHeight - el.clientHeight / 2,
+      behavior: "smooth",
+    });
+  }, []);
 
   return (
     <div ref={containerRef} style={{
       flex: 1, overflow: "auto", WebkitOverflowScrolling: "touch",
       display: "flex", alignItems: "center", justifyContent: "center",
-      padding: 12, minHeight: 0, background: "#F7F6F3",
+      padding: 12, minHeight: 0, background: "#F7F6F3", position: "relative",
     }}>
+      {miniState.show && (
+        <canvas ref={miniRef} onClick={onMiniClick} style={{
+          position: "fixed", bottom: 70, right: 12, width: 90, height: 90,
+          borderRadius: 8, border: "1.5px solid #E5E4E0", background: "#fff",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.1)", cursor: "pointer", zIndex: 40,
+        }} />
+      )}
       <div style={{
         display: "grid",
         gridTemplateColumns: `repeat(${n}, ${cellSize}px)`,
@@ -289,6 +446,7 @@ export default function MegaTicTacToe() {
   const [pwr, setPwr] = useState({ active: false, used: false, firstDone: false });
   const [zoom, setZoom] = useState(44);
   const [msg, setMsg] = useState(null);
+  const [history, setHistory] = useState([]);
 
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
 
@@ -299,7 +457,7 @@ export default function MegaTicTacToe() {
     setScores({}); setCooldowns({}); setPlayerTurns({}); setLastMove(null);
     setWinCells([]); setWinner(null); setIsDraw(false);
     setPwr({ active: false, used: false, firstDone: false });
-    setMsg(null);
+    setMsg(null); setHistory([]);
     setZoom(Math.min(52, Math.max(28, Math.floor(320 / cfg.gridSize))));
     setScreen("game");
   }, []);
@@ -345,11 +503,33 @@ export default function MegaTicTacToe() {
     setPwr({ active: false, used: false, firstDone: false });
   }, [config, cp, globalTurn, turn, scores]);
 
+  const undo = useCallback(() => {
+    if (history.length === 0) return;
+    const snap = history[history.length - 1];
+    setHistory(h => h.slice(0, -1));
+    setBoard(snap.board); setCp(snap.cp); setTurn(snap.turn);
+    setGlobalTurn(snap.globalTurn); setScores(snap.scores);
+    setCooldowns(snap.cooldowns); setPlayerTurns(snap.playerTurns);
+    setLastMove(snap.lastMove); setWinCells([]); setWinner(null);
+    setIsDraw(false); setPwr({ active: false, used: false, firstDone: false });
+    setScreen("game"); setMsg(null);
+    toast(`Undid ${PLAYERS[snap.undoPlayer].name}'s move`);
+  }, [history, toast]);
+
   const handleClick = useCallback((r, c) => {
     if (screen !== "game") return;
     const cell = board[r][c];
     const isPow = config.mode === "powers";
     const power = isPow ? POWERS[config.powers[cp]] : null;
+
+    // Save snapshot on first action of a turn (not step 2)
+    if (!pwr.firstDone) {
+      setHistory(h => [...h, {
+        board: board.map(row => row.map(x => x ? { ...x } : null)),
+        cp, turn, globalTurn, scores: { ...scores }, cooldowns: { ...cooldowns },
+        playerTurns: { ...playerTurns }, lastMove, undoPlayer: cp,
+      }]);
+    }
 
     // Step 2 of Takeover/Block/Ghost: special action after normal tile
     if (pwr.active && pwr.firstDone && power?.id === "takeover") {
@@ -456,6 +636,9 @@ export default function MegaTicTacToe() {
               <div style={{ width: 12, height: 12, borderRadius: "50%", background: playerColor.fill, boxShadow: `0 0 0 3px ${playerColor.light}` }} />
               <span style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>{playerColor.name}'s turn</span>
               <span style={{ fontSize: 12, color: "#999" }}>Turn {turn}</span>
+              {history.length > 0 && !pwr.firstDone && (
+                <button onClick={undo} style={{ background: "none", border: "1.5px solid #E5E4E0", borderRadius: 8, fontSize: 13, cursor: "pointer", padding: "4px 10px", color: "#666", fontFamily: "inherit" }}>Undo</button>
+              )}
             </div>
           )}
           <div style={{ display: "flex", gap: 2, padding: "0 16px 8px" }}>
@@ -492,7 +675,7 @@ export default function MegaTicTacToe() {
 
         {/* Board */}
         <Board board={board} onCellClick={handleClick} lastMove={lastMove} winCells={winCells}
-          currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} ghostOwner={cp} />
+          currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={cp} />
 
         {/* Bottom bar */}
         {isReview ? (
