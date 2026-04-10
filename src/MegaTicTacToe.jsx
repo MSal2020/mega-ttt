@@ -1,4 +1,28 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, createContext, useContext } from "react";
+
+const THEMES = {
+  light: {
+    bg: "#F7F6F3", card: "#fff", cardShadow: "0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03)",
+    text: "#1a1a1a", textMuted: "#888", textFaint: "#bbb", textLabel: "#999",
+    border: "#E5E4E0", borderLight: "#F0EFEC",
+    surface: "#FAFAF8", surfaceAlt: "#F0EFEC",
+    cell: "#fff", cellWall: "#EEEDEA", grid: "#E5E4E0",
+    btnPrimary: "#1a1a1a", btnPrimaryText: "#fff",
+    toast: "rgba(26,26,26,0.9)", toastText: "#fff",
+  },
+  dark: {
+    bg: "#1a1a1a", card: "#252525", cardShadow: "0 1px 3px rgba(0,0,0,0.3), 0 4px 12px rgba(0,0,0,0.2)",
+    text: "#f0f0f0", textMuted: "#888", textFaint: "#555", textLabel: "#777",
+    border: "#383838", borderLight: "#303030",
+    surface: "#2a2a2a", surfaceAlt: "#333",
+    cell: "#2e2e2e", cellWall: "#252525", grid: "#383838",
+    btnPrimary: "#f0f0f0", btnPrimaryText: "#1a1a1a",
+    toast: "rgba(240,240,240,0.9)", toastText: "#1a1a1a",
+  },
+};
+
+const ThemeCtx = createContext(THEMES.light);
+function useTheme() { return useContext(ThemeCtx); }
 
 const PLAYERS = [
   { fill: "#4A7BF7", light: "#E8EFFE", name: "Blue", ring: "#a4bcfb" },
@@ -80,6 +104,10 @@ function scoreAndMark(board, pc, lineLen, prevScores) {
   return s;
 }
 
+function themeVars(t) {
+  return Object.entries(t).map(([k,v]) => `--${k}: ${v};`).join(" ");
+}
+
 const css = `
   @keyframes popIn { 0% { transform: scale(0); } 100% { transform: scale(1); } }
   @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(-8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
@@ -97,14 +125,73 @@ const css = `
   @keyframes boardIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
   @keyframes bannerIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes miniIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
-  * { box-sizing: border-box; margin: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+  * { box-sizing: border-box; margin: 0; touch-action: manipulation; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; overscroll-behavior: none; background: var(--bg); color: var(--text); transition: background 0.3s, color 0.3s; }
   input[type=range] { accent-color: #4A7BF7; }
   .cell:hover .cell-hover { background: rgba(74,123,247,0.06); }
   .btn-hover { transition: transform 0.12s, box-shadow 0.12s, opacity 0.12s; }
   .btn-hover:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
   .btn-hover:active { transform: translateY(0) scale(0.97); box-shadow: none; }
+  select { color-scheme: light dark; }
 `;
+
+function aiPickMove(board, aiPlayer, lineLen, playerCount) {
+  const n = board.length;
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  const empty = [];
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (!board[r][c]) empty.push([r,c]);
+  if (empty.length === 0) return null;
+
+  // Score each empty cell
+  let best = -Infinity, bestMoves = [];
+  for (const [r,c] of empty) {
+    let score = 0;
+    for (const [dr,dc] of dirs) {
+      // For each direction, count consecutive tiles in both ways
+      for (let pid = 0; pid < playerCount; pid++) {
+        let fwd = 0, bwd = 0, fwdOpen = 0, bwdOpen = 0;
+        // Forward
+        for (let i = 1; i < lineLen; i++) {
+          const nr = r+dr*i, nc = c+dc*i;
+          if (nr<0||nr>=n||nc<0||nc>=n) break;
+          const cell = board[nr][nc];
+          if (cell && cell.owner === pid && !cell.wall && cell.visible !== false && !cell.scored) fwd++;
+          else { if (!cell) fwdOpen = 1; break; }
+        }
+        // Backward
+        for (let i = 1; i < lineLen; i++) {
+          const nr = r-dr*i, nc = c-dc*i;
+          if (nr<0||nr>=n||nc<0||nc>=n) break;
+          const cell = board[nr][nc];
+          if (cell && cell.owner === pid && !cell.wall && cell.visible !== false && !cell.scored) bwd++;
+          else { if (!cell) bwdOpen = 1; break; }
+        }
+        const run = fwd + bwd; // consecutive through this cell
+        const openEnds = fwdOpen + bwdOpen;
+        if (run + 1 >= lineLen) {
+          // Completing a line!
+          score += pid === aiPlayer ? 10000 : 5000;
+        } else if (run + 1 === lineLen - 1 && openEnds >= 1) {
+          // One away from completing
+          score += pid === aiPlayer ? 500 : 300;
+        } else if (run >= 2) {
+          score += pid === aiPlayer ? (run * 20 + openEnds * 10) : (run * 15 + openEnds * 8);
+        } else if (run >= 1) {
+          score += pid === aiPlayer ? 5 : 3;
+        }
+      }
+    }
+    // Slight center preference
+    const cx = (n-1)/2, cy = (n-1)/2;
+    score += Math.max(0, 3 - Math.abs(r-cx) - Math.abs(c-cy)) * 0.5;
+    // Small randomness to avoid predictability
+    score += Math.random() * 2;
+
+    if (score > best) { best = score; bestMoves = [[r,c]]; }
+    else if (score === best) bestMoves.push([r,c]);
+  }
+  return bestMoves[Math.floor(Math.random() * bestMoves.length)];
+}
 
 function Collapse({ open, maxH = 400, children }) {
   return (
@@ -116,7 +203,8 @@ function Collapse({ open, maxH = 400, children }) {
   );
 }
 
-function Setup({ onStart }) {
+function Setup({ onStart, dark, setDark }) {
+  const t = useTheme();
   const [mode, setMode] = useState("normal");
   const [gridSize, setGridSize] = useState(12);
   const [playerCount, setPlayerCount] = useState(2);
@@ -126,6 +214,7 @@ function Setup({ onStart }) {
   const [customLinesNeeded, setCustomLinesNeeded] = useState(null);
   const [timerEnabled, setTimerEnabled] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(15);
+  const [vsAI, setVsAI] = useState(false);
   const autoWc = getWinConditions(gridSize, playerCount);
   const wc = {
     lineLen: customLineLen ?? autoWc.lineLen,
@@ -135,19 +224,23 @@ function Setup({ onStart }) {
   const hasDupes = mode === "powers" && new Set(usedPowers).size < usedPowers.length;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#F7F6F3", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none" }}>
-      <div style={{ background: "#fff", borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: "0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03)", animation: "slideUp 0.4s cubic-bezier(0.16,1,0.3,1)" }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px", textAlign: "center" }}>Mega Tic Tac Toe</h1>
-        <p style={{ fontSize: 14, color: "#888", textAlign: "center", marginTop: 6 }}>Customise your game</p>
+    <div style={{ minHeight: "100dvh", background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none", transition: "background 0.3s" }}>
+      <div style={{ background: t.card, borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: t.cardShadow, animation: "slideUp 0.4s cubic-bezier(0.16,1,0.3,1)", transition: "background 0.3s, box-shadow 0.3s" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div />
+          <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px", textAlign: "center", color: t.text }}>Mega Tic Tac Toe</h1>
+          <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, opacity: 0.6 }}>{dark ? "☀" : "☾"}</button>
+        </div>
+        <p style={{ fontSize: 14, color: t.textMuted, textAlign: "center", marginTop: 6 }}>Customise your game</p>
 
         <div style={{ marginTop: 28 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Mode</div>
-          <div style={{ display: "flex", background: "#F0EFEC", borderRadius: 10, padding: 3, gap: 2 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Mode</div>
+          <div style={{ display: "flex", background: t.surfaceAlt, borderRadius: 10, padding: 3, gap: 2, transition: "background 0.3s" }}>
             {["normal", "powers"].map(m => (
               <button key={m} onClick={() => setMode(m)} style={{
                 flex: 1, padding: "8px 0", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 500,
                 cursor: "pointer", transition: "all 0.2s", fontFamily: "inherit",
-                background: mode === m ? "#fff" : "transparent", color: mode === m ? "#1a1a1a" : "#888",
+                background: mode === m ? t.card : "transparent", color: mode === m ? t.text : t.textMuted,
                 boxShadow: mode === m ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
               }}>{m === "normal" ? "Normal" : "Powers"}</button>
             ))}
@@ -156,26 +249,26 @@ function Setup({ onStart }) {
 
         <div style={{ marginTop: 22 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase" }}>Grid size</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Grid size</div>
             <span key={gridSize} style={{ fontSize: 20, fontWeight: 700, color: "#4A7BF7", animation: "scoreBump 0.2s ease-out" }}>{gridSize}×{gridSize}</span>
           </div>
           <input type="range" min={7} max={20} value={gridSize} onChange={e => setGridSize(+e.target.value)} style={{ width: "100%", marginTop: 6, cursor: "pointer" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#bbb", marginTop: 2 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: t.textFaint, marginTop: 2 }}>
             <span>7×7</span><span>20×20</span>
           </div>
         </div>
 
         <div style={{ marginTop: 22 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Players</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Players</div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             {[2, 3, 4].map(n => (
               <button key={n} onClick={() => setPlayerCount(n)} style={{
                 width: 48, height: 48, borderRadius: 10, fontSize: 18, fontWeight: 600, cursor: "pointer",
                 fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center",
                 transition: "all 0.15s",
-                border: playerCount === n ? "2px solid #4A7BF7" : "1.5px solid #E5E4E0",
-                background: playerCount === n ? "#E8EFFE" : "#fff",
-                color: playerCount === n ? "#4A7BF7" : "#666",
+                border: playerCount === n ? "2px solid #4A7BF7" : `1.5px solid ${t.border}`,
+                background: playerCount === n ? "#E8EFFE" : t.card,
+                color: playerCount === n ? "#4A7BF7" : t.textMuted,
               }}>{n}</button>
             ))}
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
@@ -191,15 +284,33 @@ function Setup({ onStart }) {
           </div>
         </div>
 
+        {playerCount === 2 && (
+          <div style={{ marginTop: 22, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Opponent</div>
+              <div style={{ fontSize: 13, color: t.textMuted, marginTop: 2 }}>{vsAI ? "Play vs AI" : "Local multiplayer"}</div>
+            </div>
+            <button onClick={() => setVsAI(v => !v)} style={{
+              width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
+              background: vsAI ? "#4A7BF7" : t.border, position: "relative", transition: "background 0.2s",
+            }}>
+              <div style={{
+                width: 18, height: 18, borderRadius: "50%", background: t.card, position: "absolute", top: 2,
+                left: vsAI ? 20 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+              }} />
+            </button>
+          </div>
+        )}
+
         <Collapse open={mode === "powers"} maxH={300}>
           <div style={{ marginTop: 22, paddingBottom: 2 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Assign powers</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Assign powers</div>
             {Array.from({ length: playerCount }).map((_, pi) => (
-              <div key={pi} style={{ display: "flex", alignItems: "center", gap: 10, background: "#FAFAF8", borderRadius: 10, padding: "8px 12px", marginBottom: 6 }}>
+              <div key={pi} style={{ display: "flex", alignItems: "center", gap: 10, background: t.surface, borderRadius: 10, padding: "8px 12px", marginBottom: 6 }}>
                 <div style={{ width: 10, height: 10, borderRadius: "50%", background: PLAYERS[pi].fill, flexShrink: 0 }} />
-                <span style={{ fontSize: 13, fontWeight: 500, width: 48, flexShrink: 0 }}>{PLAYERS[pi].name}</span>
+                <span style={{ fontSize: 13, fontWeight: 500, width: 48, flexShrink: 0, color: t.text }}>{PLAYERS[pi].name}</span>
                 <select value={powers[pi]} onChange={e => { const p = [...powers]; p[pi] = +e.target.value; setPowers(p); }}
-                  style={{ flex: 1, padding: "6px 8px", borderRadius: 8, border: "1.5px solid #E5E4E0", fontSize: 13, fontFamily: "inherit", background: "#fff", color: "#1a1a1a" }}>
+                  style={{ flex: 1, padding: "6px 8px", borderRadius: 8, border: `1.5px solid ${t.border}`, fontSize: 13, fontFamily: "inherit", background: t.card, color: t.text }}>
                   {POWERS.map((pw, wi) => <option key={wi} value={wi}>{pw.icon} {pw.name}</option>)}
                 </select>
               </div>
@@ -208,9 +319,9 @@ function Setup({ onStart }) {
           </div>
         </Collapse>
 
-        <div style={{ marginTop: 22, background: "#FAFAF8", borderRadius: 10, padding: "12px 14px" }}>
-          <div style={{ fontSize: 12, color: "#999", fontWeight: 500, marginBottom: 4 }}>Win condition</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>
+        <div style={{ marginTop: 22, background: t.surface, borderRadius: 10, padding: "12px 14px", transition: "background 0.3s" }}>
+          <div style={{ fontSize: 12, color: t.textLabel, fontWeight: 500, marginBottom: 4 }}>Win condition</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: t.text }}>
             {wc.lineLen} in a row{wc.linesNeeded > 1 ? `, ${wc.linesNeeded} times` : ""}
             {(customLineLen !== null || customLinesNeeded !== null) && <span style={{ fontSize: 11, color: "#4A7BF7", marginLeft: 6 }}>custom</span>}
           </div>
@@ -218,7 +329,7 @@ function Setup({ onStart }) {
 
         <button onClick={() => setShowAdvanced(v => !v)} style={{
           width: "100%", padding: "10px 0", border: "none", background: "none",
-          fontSize: 13, color: "#999", cursor: "pointer", fontFamily: "inherit",
+          fontSize: 13, color: t.textLabel, cursor: "pointer", fontFamily: "inherit",
           marginTop: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
         }}>
           <span style={{ transform: showAdvanced ? "rotate(90deg)" : "rotate(0)", transition: "transform 0.2s", display: "inline-block" }}>▸</span>
@@ -226,40 +337,40 @@ function Setup({ onStart }) {
         </button>
 
         <Collapse open={showAdvanced} maxH={400}>
-          <div style={{ background: "#FAFAF8", borderRadius: 10, padding: "14px", marginTop: 4 }}>
+          <div style={{ background: t.surface, borderRadius: 10, padding: "14px", marginTop: 4, transition: "background 0.3s" }}>
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase" }}>Line length</div>
-                <span style={{ fontSize: 16, fontWeight: 700, color: customLineLen !== null ? "#4A7BF7" : "#1a1a1a", transition: "color 0.2s" }}>{wc.lineLen}</span>
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Line length</div>
+                <span style={{ fontSize: 16, fontWeight: 700, color: customLineLen !== null ? "#4A7BF7" : t.text, transition: "color 0.2s" }}>{wc.lineLen}</span>
               </div>
               <input type="range" min={3} max={Math.min(gridSize, 8)} value={wc.lineLen}
                 onChange={e => { const v = +e.target.value; setCustomLineLen(v === autoWc.lineLen ? null : v); }}
                 style={{ width: "100%", cursor: "pointer" }} />
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#bbb", marginTop: 2 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: t.textFaint, marginTop: 2 }}>
                 <span>3</span><span>{Math.min(gridSize, 8)}</span>
               </div>
             </div>
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase" }}>Lines to win</div>
-                <span style={{ fontSize: 16, fontWeight: 700, color: customLinesNeeded !== null ? "#4A7BF7" : "#1a1a1a", transition: "color 0.2s" }}>{wc.linesNeeded}</span>
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Lines to win</div>
+                <span style={{ fontSize: 16, fontWeight: 700, color: customLinesNeeded !== null ? "#4A7BF7" : t.text, transition: "color 0.2s" }}>{wc.linesNeeded}</span>
               </div>
               <input type="range" min={1} max={5} value={wc.linesNeeded}
                 onChange={e => { const v = +e.target.value; setCustomLinesNeeded(v === autoWc.linesNeeded ? null : v); }}
                 style={{ width: "100%", cursor: "pointer" }} />
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#bbb", marginTop: 2 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: t.textFaint, marginTop: 2 }}>
                 <span>1</span><span>5</span>
               </div>
             </div>
             <div style={{ marginTop: 14 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#999", letterSpacing: "0.5px", textTransform: "uppercase" }}>Turn timer</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Turn timer</div>
                 <button onClick={() => setTimerEnabled(v => !v)} style={{
                   width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
-                  background: timerEnabled ? "#4A7BF7" : "#E5E4E0", position: "relative", transition: "background 0.2s",
+                  background: timerEnabled ? "#4A7BF7" : t.border, position: "relative", transition: "background 0.2s",
                 }}>
                   <div style={{
-                    width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+                    width: 18, height: 18, borderRadius: "50%", background: t.card, position: "absolute", top: 2,
                     left: timerEnabled ? 20 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
                   }} />
                 </button>
@@ -267,13 +378,13 @@ function Setup({ onStart }) {
               <Collapse open={timerEnabled} maxH={120}>
                 <div style={{ paddingBottom: 2 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, color: "#888" }}>Seconds per turn</span>
+                    <span style={{ fontSize: 12, color: t.textMuted }}>Seconds per turn</span>
                     <span style={{ fontSize: 16, fontWeight: 700, color: "#4A7BF7" }}>{timerSeconds}s</span>
                   </div>
                   <input type="range" min={5} max={60} step={5} value={timerSeconds}
                     onChange={e => setTimerSeconds(+e.target.value)}
                     style={{ width: "100%", cursor: "pointer" }} />
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#bbb", marginTop: 2 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: t.textFaint, marginTop: 2 }}>
                     <span>5s</span><span>60s</span>
                   </div>
                 </div>
@@ -281,18 +392,18 @@ function Setup({ onStart }) {
             </div>
             {(customLineLen !== null || customLinesNeeded !== null) && (
               <button className="btn-hover" onClick={() => { setCustomLineLen(null); setCustomLinesNeeded(null); }} style={{
-                width: "100%", padding: 8, borderRadius: 8, border: "1.5px solid #E5E4E0",
-                background: "#fff", fontSize: 12, color: "#999", cursor: "pointer",
+                width: "100%", padding: 8, borderRadius: 8, border: `1.5px solid ${t.border}`,
+                background: t.card, fontSize: 12, color: t.textLabel, cursor: "pointer",
                 fontFamily: "inherit", marginTop: 10,
               }}>Reset to default</button>
             )}
           </div>
         </Collapse>
 
-        <button className="btn-hover" onClick={() => !hasDupes && onStart({ mode, gridSize, playerCount, powers: powers.slice(0, playerCount), ...wc, timer: timerEnabled ? timerSeconds : 0 })}
+        <button className="btn-hover" onClick={() => !hasDupes && onStart({ mode, gridSize, playerCount, powers: powers.slice(0, playerCount), ...wc, timer: timerEnabled ? timerSeconds : 0, ai: vsAI && playerCount === 2 })}
           style={{
             width: "100%", padding: 14, borderRadius: 12, border: "none", fontSize: 15, fontWeight: 600,
-            cursor: hasDupes ? "default" : "pointer", background: "#1a1a1a", color: "#fff",
+            cursor: hasDupes ? "default" : "pointer", background: t.btnPrimary, color: t.btnPrimaryText,
             fontFamily: "inherit", marginTop: 24, opacity: hasDupes ? 0.4 : 1,
             transition: "opacity 0.15s, transform 0.12s, box-shadow 0.12s",
           }}>Start Game</button>
@@ -302,6 +413,7 @@ function Setup({ onStart }) {
 }
 
 function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner }) {
+  const t = useTheme();
   const n = board.length;
   const cellSize = Math.max(28, Math.round(zoom));
   const gap = 1;
@@ -381,13 +493,13 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
     canvas.width = miniSize; canvas.height = miniSize;
     const ctx = canvas.getContext("2d");
     const px = miniSize / n;
-    ctx.fillStyle = "#E5E4E0";
+    ctx.fillStyle = t.grid;
     ctx.fillRect(0, 0, miniSize, miniSize);
     for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
       const cell = board[r][c];
-      if (cell && cell.wall) ctx.fillStyle = "#ccc";
+      if (cell && cell.wall) ctx.fillStyle = t.cellWall;
       else if (cell && !cell.wall && cell.visible !== false) ctx.fillStyle = PLAYERS[cell.owner].fill;
-      else ctx.fillStyle = "#fff";
+      else ctx.fillStyle = t.cell;
       ctx.fillRect(c * px + 0.5, r * px + 0.5, px - 1, px - 1);
     }
     // Viewport rect — use scrollWidth/scrollHeight to account for flex centering
@@ -399,7 +511,7 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
     ctx.strokeStyle = "rgba(74,123,247,0.8)";
     ctx.lineWidth = 2;
     ctx.strokeRect(vx, vy, Math.min(vw, miniSize), Math.min(vh, miniSize));
-  }, [miniState, board, n]);
+  }, [miniState, board, n, t]);
 
   const onMiniClick = useCallback((e) => {
     const el = containerRef.current;
@@ -417,13 +529,13 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
   return (
     <div ref={containerRef} style={{
       flex: 1, overflow: "auto", WebkitOverflowScrolling: "touch",
-      display: "flex", alignItems: "center", justifyContent: "center",
-      padding: 12, minHeight: 0, background: "#F7F6F3", position: "relative",
+      display: "flex", alignItems: "flex-start", justifyContent: "center",
+      padding: "8px 12px 12px", minHeight: 0, background: "var(--bg)", position: "relative",
     }}>
       {miniState.show && (
         <canvas ref={miniRef} onClick={onMiniClick} style={{
           position: "fixed", bottom: 70, right: 12, width: 90, height: 90,
-          borderRadius: 8, border: "1.5px solid #E5E4E0", background: "#fff",
+          borderRadius: 8, border: `1.5px solid ${t.border}`, background: t.card,
           boxShadow: "0 2px 8px rgba(0,0,0,0.1)", cursor: "pointer", zIndex: 40,
           animation: "miniIn 0.3s cubic-bezier(0.16,1,0.3,1)",
         }} />
@@ -432,7 +544,7 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
         display: "grid",
         gridTemplateColumns: `repeat(${n}, ${cellSize}px)`,
         gridTemplateRows: `repeat(${n}, ${cellSize}px)`,
-        gap, background: "#E5E4E0", borderRadius: 6, padding: gap, flexShrink: 0,
+        gap, background: "var(--grid)", borderRadius: 6, padding: gap, flexShrink: 0,
         animation: "boardIn 0.4s cubic-bezier(0.16,1,0.3,1)",
       }}>
         {board.map((row, r) => row.map((cell, c) => {
@@ -450,7 +562,7 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
 
           return (
             <div key={`${r}-${c}`} className={clickable ? "cell" : undefined} onClick={() => onCellClick(r, c)} style={{
-              width: cellSize, height: cellSize, background: isWall ? "#EEEDEA" : "#fff",
+              width: cellSize, height: cellSize, background: isWall ? "var(--cellWall)" : "var(--cell)",
               borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center",
               cursor: clickable ? "pointer" : "default",
               position: "relative", transition: "background 0.2s",
@@ -463,8 +575,8 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
               {isWall && (
                 <svg width={cellSize * 0.45} height={cellSize * 0.45} viewBox="0 0 20 20"
                   style={{ opacity: 0.35, animation: cell.anim === "wall" ? "wallDrop 0.35s ease-out" : undefined }}>
-                  <line x1="4" y1="4" x2="16" y2="16" stroke="#888" strokeWidth="2.5" strokeLinecap="round" />
-                  <line x1="16" y1="4" x2="4" y2="16" stroke="#888" strokeWidth="2.5" strokeLinecap="round" />
+                  <line x1="4" y1="4" x2="16" y2="16" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                  <line x1="16" y1="4" x2="4" y2="16" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                 </svg>
               )}
               {owned && (
@@ -490,7 +602,7 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
                 }} />
               )}
               {isGhost && !showGhost && (
-                <div style={{ width: cellSize * 0.25, height: cellSize * 0.25, borderRadius: "50%", background: "#ddd" }} />
+                <div style={{ width: cellSize * 0.25, height: cellSize * 0.25, borderRadius: "50%", background: t.textFaint }} />
               )}
               {stealTarget && (
                 <div style={{
@@ -509,6 +621,8 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
 
 
 export default function MegaTicTacToe() {
+  const [dark, setDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const theme = THEMES[dark ? "dark" : "light"];
   const [screen, setScreen] = useState("setup");
   const [config, setConfig] = useState(null);
   const [board, setBoard] = useState([]);
@@ -540,7 +654,8 @@ export default function MegaTicTacToe() {
     setPwr({ active: false, used: false, firstDone: false });
     setMsg(null); setHistory([]);
     setTimeLeft(cfg.timer || 0);
-    setZoom(Math.min(52, Math.max(28, Math.floor(320 / cfg.gridSize))));
+    const vw = Math.min(window.innerWidth - 32, 600);
+    setZoom(Math.min(52, Math.max(22, Math.floor(vw / cfg.gridSize))));
     setScreen("game");
   }, []);
 
@@ -622,6 +737,29 @@ export default function MegaTicTacToe() {
     return () => clearInterval(id);
   }, [screen, cp, config, toast]);
 
+  // AI auto-play
+  useEffect(() => {
+    if (screen !== "game" || !config?.ai || cp !== 1) return;
+    const delay = 400 + Math.random() * 300; // slight human-like delay
+    const id = setTimeout(() => {
+      const move = aiPickMove(boardRef.current, 1, config.lineLen, config.playerCount);
+      if (move) {
+        const [r, c] = move;
+        const b = boardRef.current.map(row => row.map(x => x ? {...x} : null));
+        b[r][c] = { owner: 1, visible: true };
+        setLastMove([r, c]);
+        setHistory(h => [...h, {
+          board: boardRef.current.map(row => row.map(x => x ? { ...x } : null)),
+          cp: 1, turn, globalTurn, scores: { ...scores }, cooldowns: { ...cooldownsRef.current },
+          playerTurns: { ...playerTurns }, lastMove, undoPlayer: 1,
+        }]);
+        setBoard(b);
+        endTurnRef.current(b, { ...cooldownsRef.current });
+      }
+    }, delay);
+    return () => clearTimeout(id);
+  }, [screen, cp, config, turn, globalTurn, scores, playerTurns, lastMove]);
+
   const undo = useCallback(() => {
     if (history.length === 0) return;
     const snap = history[history.length - 1];
@@ -637,6 +775,7 @@ export default function MegaTicTacToe() {
 
   const handleClick = useCallback((r, c) => {
     if (screen !== "game") return;
+    if (config.ai && cp === 1) return; // AI's turn, ignore clicks
     const cell = board[r][c];
     const isPow = config.mode === "powers";
     const power = isPow ? POWERS[config.powers[cp]] : null;
@@ -722,7 +861,8 @@ export default function MegaTicTacToe() {
     setPwr({ ...pwr, active: true, used: true });
   }, [pwr, config, cp, toast]);
 
-  if (screen === "setup") return <><style>{css}</style><Setup onStart={startGame} /></>;
+  const themedCss = `:root { ${themeVars(theme)} }\n${css}`;
+  if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
 
   const isReview = screen === "review";
   const isPow = config.mode === "powers";
@@ -735,28 +875,30 @@ export default function MegaTicTacToe() {
   const winnerColor = winner !== null ? PLAYERS[winner] : null;
 
   return (
-    <>
-      <style>{css}</style>
-      <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#F7F6F3", userSelect: "none", WebkitUserSelect: "none", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif", overflow: "hidden" }}>
+    <ThemeCtx.Provider value={theme}>
+      <style>{themedCss}</style>
+      <div style={{ height: "100dvh", display: "flex", flexDirection: "column", background: "var(--bg)", userSelect: "none", WebkitUserSelect: "none", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif", overflow: "hidden", transition: "background 0.3s" }}>
 
         {/* Header */}
-        <div style={{ background: "#fff", borderBottom: "1px solid #F0EFEC" }}>
+        <div style={{ background: "var(--card)", borderBottom: "1px solid var(--borderLight)", transition: "background 0.3s" }}>
           {isReview ? (
             <div style={{ padding: "12px 16px", textAlign: "center", animation: "bannerIn 0.4s cubic-bezier(0.16,1,0.3,1)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                 {winnerColor && <div style={{ width: 14, height: 14, borderRadius: "50%", background: winnerColor.fill, animation: "popIn 0.3s cubic-bezier(0.34,1.56,0.64,1)" }} />}
                 <span style={{ fontSize: 17, fontWeight: 700 }}>{isDraw ? "It's a draw!" : `${winnerColor.name} wins!`}</span>
               </div>
-              {!isDraw && <p style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Completed {config.linesNeeded} line{config.linesNeeded > 1 ? "s" : ""} of {config.lineLen}</p>}
+              {!isDraw && <p style={{ fontSize: 12, color: "var(--textMuted)", marginTop: 4 }}>Completed {config.linesNeeded} line{config.linesNeeded > 1 ? "s" : ""} of {config.lineLen}</p>}
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", padding: "10px 16px", gap: 10 }}>
-              <button className="btn-hover" onClick={() => setScreen("setup")} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "#999" }}>←</button>
+              <button className="btn-hover" onClick={() => setScreen("setup")} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "var(--textLabel)" }}>←</button>
               <div style={{ width: 12, height: 12, borderRadius: "50%", background: playerColor.fill, boxShadow: `0 0 0 3px ${playerColor.light}`, transition: "background 0.3s, box-shadow 0.3s" }} />
-              <span key={cp} style={{ fontSize: 15, fontWeight: 600, flex: 1, color: playerColor.fill, animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)" }}>{playerColor.name}'s turn</span>
-              <span style={{ fontSize: 12, color: "#999" }}>Turn {turn}</span>
+              <span key={cp} style={{ fontSize: 15, fontWeight: 600, flex: 1, color: playerColor.fill, animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)" }}>
+                {config.ai && cp === 1 ? "AI thinking..." : `${playerColor.name}'s turn`}
+              </span>
+              <span style={{ fontSize: 12, color: "var(--textLabel)" }}>Turn {turn}</span>
               {history.length > 0 && !pwr.firstDone && (
-                <button className="btn-hover" onClick={undo} style={{ background: "none", border: "1.5px solid #E5E4E0", borderRadius: 8, fontSize: 13, cursor: "pointer", padding: "4px 10px", color: "#666", fontFamily: "inherit" }}>Undo</button>
+                <button className="btn-hover" onClick={undo} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, cursor: "pointer", padding: "4px 10px", color: "var(--textMuted)", fontFamily: "inherit" }}>Undo</button>
               )}
             </div>
           )}
@@ -765,12 +907,12 @@ export default function MegaTicTacToe() {
               <div key={i} style={{
                 flex: 1, display: "flex", alignItems: "center", gap: 6,
                 padding: "5px 10px", borderRadius: 8, transition: "background 0.2s",
-                background: (isReview ? i === winner : i === cp) ? PLAYERS[i].light : "#FAFAF8",
+                background: (isReview ? i === winner : i === cp) ? PLAYERS[i].light : "var(--surface)",
               }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", background: PLAYERS[i].fill }} />
                 <span key={scores[i] || 0} style={{
                   fontSize: 12, fontWeight: 500,
-                  color: (isReview ? i === winner : i === cp) ? PLAYERS[i].fill : "#888",
+                  color: (isReview ? i === winner : i === cp) ? PLAYERS[i].fill : "var(--textMuted)",
                   transition: "color 0.3s",
                   animation: (scores[i] || 0) > 0 ? "scoreBump 0.35s cubic-bezier(0.34,1.56,0.64,1)" : undefined,
                 }}>
@@ -783,8 +925,8 @@ export default function MegaTicTacToe() {
 
         {/* Timer bar */}
         {config.timer > 0 && !isReview && (
-          <div style={{ padding: "0 16px", background: "#F7F6F3" }}>
-            <div style={{ height: 4, background: "#E5E4E0", borderRadius: 2, overflow: "hidden" }}>
+          <div style={{ padding: "0 16px", background: "var(--bg)" }}>
+            <div style={{ height: 4, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
               <div style={{
                 height: "100%", borderRadius: 2,
                 background: timeLeft <= 5 ? "#F25C54" : playerColor.fill,
@@ -792,28 +934,27 @@ export default function MegaTicTacToe() {
                 transition: "width 1s linear, background 0.3s",
               }} />
             </div>
-            <div style={{ textAlign: "center", fontSize: 11, color: timeLeft <= 5 ? "#F25C54" : "#999", fontWeight: 600, marginTop: 2 }}>
+            <div style={{ textAlign: "center", fontSize: 11, color: timeLeft <= 5 ? "#F25C54" : "var(--textLabel)", fontWeight: 600, marginTop: 2 }}>
               {timeLeft}s
             </div>
           </div>
         )}
 
         {/* Zoom controls */}
-        <div style={{ display: "flex", justifyContent: "center", gap: 8, padding: "6px 16px", background: "#F7F6F3" }}>
-          <button className="btn-hover" onClick={() => setZoom(z => Math.max(20, z - 6))} style={{ width: 30, height: 30, borderRadius: 8, border: "1.5px solid #E5E4E0", background: "#fff", fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>−</button>
-          <button className="btn-hover" onClick={() => setZoom(z => Math.min(72, z + 6))} style={{ width: 30, height: 30, borderRadius: 8, border: "1.5px solid #E5E4E0", background: "#fff", fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>+</button>
+        <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "4px 16px", background: "var(--bg)" }}>
+          <button className="btn-hover" onClick={() => setZoom(z => Math.max(20, z - 6))} style={{ width: 28, height: 28, borderRadius: 7, border: "1.5px solid var(--border)", background: "var(--card)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--textMuted)" }}>−</button>
+          <button className="btn-hover" onClick={() => setZoom(z => Math.min(72, z + 6))} style={{ width: 28, height: 28, borderRadius: 7, border: "1.5px solid var(--border)", background: "var(--card)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--textMuted)" }}>+</button>
         </div>
 
         {/* Toast */}
         {msg && (
           <div key={msg} style={{
             position: "fixed", top: 110, left: "50%", transform: "translateX(-50%)",
-            background: "#1a1a1a", color: "#fff", padding: "8px 18px", borderRadius: 10,
+            background: "var(--toast)", color: "var(--toastText)", padding: "8px 18px", borderRadius: 10,
             fontSize: 13, fontWeight: 500, zIndex: 50,
             animation: "fadeIn 0.25s cubic-bezier(0.16,1,0.3,1)",
             boxShadow: "0 4px 16px rgba(0,0,0,0.15)", whiteSpace: "nowrap",
             backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-            background: "rgba(26,26,26,0.9)",
           }}>{msg}</div>
         )}
 
@@ -823,12 +964,12 @@ export default function MegaTicTacToe() {
 
         {/* Bottom bar */}
         {isReview ? (
-          <div style={{ display: "flex", gap: 10, padding: "10px 16px", background: "#fff", borderTop: "1px solid #F0EFEC", animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1)" }}>
-            <button className="btn-hover" onClick={() => setScreen("setup")} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "#F0EFEC", color: "#1a1a1a", fontFamily: "inherit" }}>Setup</button>
-            <button className="btn-hover" onClick={() => startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "#1a1a1a", color: "#fff", fontFamily: "inherit" }}>Play Again</button>
+          <div style={{ display: "flex", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1)" }}>
+            <button className="btn-hover" onClick={() => setScreen("setup")} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }}>Setup</button>
+            <button className="btn-hover" onClick={() => startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--btnPrimary)", color: "var(--btnPrimaryText)", fontFamily: "inherit" }}>Play Again</button>
           </div>
         ) : isPow && (
-          <div key={cp} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: "#fff", borderTop: "1px solid #F0EFEC", animation: "slideUp 0.2s cubic-bezier(0.16,1,0.3,1)" }}>
+          <div key={cp} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.2s cubic-bezier(0.16,1,0.3,1)" }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ opacity: 0.4 }}>{power.icon}</span> {power.name}
@@ -836,7 +977,7 @@ export default function MegaTicTacToe() {
                 {pwr.firstDone && power.id === "doublePlace" && <span style={{ fontSize: 11, background: "#FDE8E7", color: "#F25C54", padding: "2px 8px", borderRadius: 6, fontWeight: 500, animation: "popIn 0.2s ease-out" }}>2nd tile</span>}
                 {pwr.firstDone && power.id !== "doublePlace" && <span style={{ fontSize: 11, background: "#E8EFFE", color: "#4A7BF7", padding: "2px 8px", borderRadius: 6, fontWeight: 500, animation: "popIn 0.2s ease-out" }}>use power</span>}
               </div>
-              <div style={{ fontSize: 11, color: "#999", marginTop: 2, transition: "color 0.2s" }}>
+              <div style={{ fontSize: 11, color: "var(--textLabel)", marginTop: 2, transition: "color 0.2s" }}>
                 {cd > 0 ? `Cooldown: ${cd} turn${cd > 1 ? "s" : ""}` : power.desc}
               </div>
             </div>
@@ -845,13 +986,13 @@ export default function MegaTicTacToe() {
                 padding: "8px 16px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
                 fontFamily: "inherit", cursor: (canUse || pwr.active) ? "pointer" : "default",
                 transition: "all 0.15s",
-                background: pwr.active ? "#F25C54" : canUse ? playerColor.fill : "#E5E4E0",
-                color: (canUse || pwr.active) ? "#fff" : "#bbb",
+                background: pwr.active ? "#F25C54" : canUse ? playerColor.fill : "var(--border)",
+                color: (canUse || pwr.active) ? "#fff" : "var(--textFaint)",
               }}>{pwr.active ? "Cancel" : "Use"}</button>
             )}
           </div>
         )}
       </div>
-    </>
+    </ThemeCtx.Provider>
   );
 }
