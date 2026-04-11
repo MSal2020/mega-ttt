@@ -1,4 +1,10 @@
 import { useState, useCallback, useRef, useEffect, createContext, useContext } from "react";
+import {
+  PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
+  findLines, revealGhosts, scoreAndMark, aiPickMove,
+  isBoardFull, getScoredCells, generateRoomCode,
+} from "./gameLogic.js";
+import { createConnection } from "./multiplayer.js";
 
 const THEMES = {
   light: {
@@ -23,86 +29,6 @@ const THEMES = {
 
 const ThemeCtx = createContext(THEMES.light);
 function useTheme() { return useContext(ThemeCtx); }
-
-const PLAYERS = [
-  { fill: "#4A7BF7", light: "#E8EFFE", name: "Blue", ring: "#a4bcfb" },
-  { fill: "#F25C54", light: "#FDE8E7", name: "Coral", ring: "#f9a8a5" },
-  { fill: "#4DAA6D", light: "#E3F3E8", name: "Sage", ring: "#96d4a9" },
-  { fill: "#F2A93B", light: "#FDF1DC", name: "Amber", ring: "#f7cf8a" },
-];
-
-const POWERS = [
-  { id: "doublePlace", name: "Double Place", desc: "2 tiles every other turn", cd: 0, icon: "◇" },
-  { id: "takeover", name: "Takeover", desc: "Steal an opponent's tile", cd: 3, icon: "△" },
-  { id: "block", name: "Block", desc: "Drop a permanent wall", cd: 3, icon: "□" },
-  { id: "ghost", name: "Ghost", desc: "Place a hidden tile", cd: 0, icon: "○" },
-];
-
-function getWinConditions(gs, pc) {
-  if (gs <= 9) return { lineLen: 4, linesNeeded: pc <= 3 ? 2 : 1 };
-  if (gs <= 14) return { lineLen: 5, linesNeeded: pc <= 3 ? 2 : 1 };
-  return { lineLen: 5, linesNeeded: pc <= 3 ? 3 : 2 };
-}
-
-function makeBoard(n) {
-  return Array.from({ length: n }, () => Array.from({ length: n }, () => null));
-}
-
-function findLines(board, pid, len) {
-  const n = board.length, dirs = [[0,1],[1,0],[1,1],[1,-1]], found = [];
-  const used = new Set(); // cells already part of a scored line in a given direction
-  for (const [dr,dc] of dirs) {
-    const dirKey = `${dr},${dc}`;
-    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
-      if (used.has(`${dirKey},${r},${c}`)) continue;
-      // extend as far as possible in this direction
-      const cells = [];
-      for (let i = 0; ; i++) {
-        const nr = r+dr*i, nc = c+dc*i;
-        if (nr<0||nr>=n||nc<0||nc>=n) break;
-        const cell = board[nr][nc];
-        if (cell && cell.owner === pid && !cell.wall && cell.visible !== false && !cell.scored) cells.push([nr,nc]);
-        else break;
-      }
-      if (cells.length >= len) {
-        found.push(cells);
-        for (const [cr,cc] of cells) used.add(`${dirKey},${cr},${cc}`);
-      }
-    }
-  }
-  return found;
-}
-
-function revealGhosts(board, gTurn) {
-  return board.map(row => row.map(c => {
-    if (c && c.visible === false && gTurn - c.placedTurn >= 2) return { ...c, visible: true, anim: "reveal" };
-    return c ? { ...c } : null;
-  }));
-}
-
-
-function scoreAndMark(board, pc, lineLen, prevScores) {
-  // 1. Count new lines (before marking)
-  const s = {};
-  for (let p = 0; p < pc; p++) s[p] = (prevScores[p] || 0);
-  // 2. Mark one line at a time, incrementing score each time
-  let found = true;
-  while (found) {
-    found = false;
-    for (let p = 0; p < pc; p++) {
-      const lines = findLines(board, p, lineLen);
-      if (lines.length > 0) {
-        s[p]++;
-        for (const [r,c] of lines[0]) {
-          board[r][c] = { ...board[r][c], scored: true, anim: "score" };
-        }
-        found = true;
-        break; // restart so findLines re-evaluates
-      }
-    }
-  }
-  return s;
-}
 
 function themeVars(t) {
   return Object.entries(t).map(([k,v]) => `--${k}: ${v};`).join(" ");
@@ -135,64 +61,6 @@ const css = `
   select { color-scheme: light dark; }
 `;
 
-function aiPickMove(board, aiPlayer, lineLen, playerCount) {
-  const n = board.length;
-  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
-  const empty = [];
-  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (!board[r][c]) empty.push([r,c]);
-  if (empty.length === 0) return null;
-
-  // Score each empty cell
-  let best = -Infinity, bestMoves = [];
-  for (const [r,c] of empty) {
-    let score = 0;
-    for (const [dr,dc] of dirs) {
-      // For each direction, count consecutive tiles in both ways
-      for (let pid = 0; pid < playerCount; pid++) {
-        let fwd = 0, bwd = 0, fwdOpen = 0, bwdOpen = 0;
-        // Forward
-        for (let i = 1; i < lineLen; i++) {
-          const nr = r+dr*i, nc = c+dc*i;
-          if (nr<0||nr>=n||nc<0||nc>=n) break;
-          const cell = board[nr][nc];
-          if (cell && cell.owner === pid && !cell.wall && cell.visible !== false && !cell.scored) fwd++;
-          else { if (!cell) fwdOpen = 1; break; }
-        }
-        // Backward
-        for (let i = 1; i < lineLen; i++) {
-          const nr = r-dr*i, nc = c-dc*i;
-          if (nr<0||nr>=n||nc<0||nc>=n) break;
-          const cell = board[nr][nc];
-          if (cell && cell.owner === pid && !cell.wall && cell.visible !== false && !cell.scored) bwd++;
-          else { if (!cell) bwdOpen = 1; break; }
-        }
-        const run = fwd + bwd; // consecutive through this cell
-        const openEnds = fwdOpen + bwdOpen;
-        if (run + 1 >= lineLen) {
-          // Completing a line!
-          score += pid === aiPlayer ? 10000 : 5000;
-        } else if (run + 1 === lineLen - 1 && openEnds >= 1) {
-          // One away from completing
-          score += pid === aiPlayer ? 500 : 300;
-        } else if (run >= 2) {
-          score += pid === aiPlayer ? (run * 20 + openEnds * 10) : (run * 15 + openEnds * 8);
-        } else if (run >= 1) {
-          score += pid === aiPlayer ? 5 : 3;
-        }
-      }
-    }
-    // Slight center preference
-    const cx = (n-1)/2, cy = (n-1)/2;
-    score += Math.max(0, 3 - Math.abs(r-cx) - Math.abs(c-cy)) * 0.5;
-    // Small randomness to avoid predictability
-    score += Math.random() * 2;
-
-    if (score > best) { best = score; bestMoves = [[r,c]]; }
-    else if (score === best) bestMoves.push([r,c]);
-  }
-  return bestMoves[Math.floor(Math.random() * bestMoves.length)];
-}
-
 function Collapse({ open, maxH = 400, children }) {
   return (
     <div style={{
@@ -203,7 +71,264 @@ function Collapse({ open, maxH = 400, children }) {
   );
 }
 
-function Setup({ onStart, dark, setDark }) {
+function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
+  const t = useTheme();
+  const [tab, setTab] = useState("menu"); // menu | create | join
+  const [roomCode, setRoomCode] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [conn, setConn] = useState(null);
+  const [players, setPlayers] = useState([]);
+  const [you, setYou] = useState(-1);
+  const [error, setError] = useState(null);
+  const [status, setStatus] = useState("connecting");
+  const [copied, setCopied] = useState(false);
+
+  // Config state (host only)
+  const [mode, setMode] = useState("normal");
+  const [gridSize, setGridSize] = useState(12);
+  const autoWc = getWinConditions(gridSize, 2);
+  const wc = autoWc;
+
+  const connectToRoom = useCallback((code, isHost) => {
+    setRoomCode(code);
+    setStatus("connecting");
+    setError(null);
+
+    const connection = createConnection(code, (msg) => {
+      switch (msg.type) {
+        case "room-state":
+          setYou(msg.you);
+          setPlayers(msg.players || []);
+          setStatus("connected");
+          if (msg.phase === "playing" || msg.phase === "review") {
+            onGameStart(connection, msg);
+          }
+          break;
+        case "player-joined":
+          setPlayers(prev => {
+            const existing = prev.find(p => p.slot === msg.slot);
+            if (existing) return prev;
+            return [...prev, { slot: msg.slot, name: msg.name }];
+          });
+          break;
+        case "player-left":
+          setPlayers(prev => prev.filter(p => p.slot !== msg.slot));
+          break;
+        case "config-updated":
+          break;
+        case "game-started":
+        case "move-applied":
+        case "game-over":
+          onGameStart(connection, msg);
+          break;
+        case "error":
+          setError(msg.message);
+          setTimeout(() => setError(null), 3000);
+          break;
+        default: break;
+      }
+    });
+
+    connection.ws.addEventListener("open", () => {
+      connection.join(isHost ? "Host" : "Guest");
+      setStatus("connected");
+    });
+    connection.ws.addEventListener("error", () => {
+      setError("Connection failed");
+      setStatus("error");
+    });
+    connection.ws.addEventListener("close", () => {
+      setStatus("disconnected");
+    });
+
+    setConn(connection);
+    return connection;
+  }, [onGameStart]);
+
+  const createRoom = useCallback(() => {
+    const code = generateRoomCode();
+    setTab("create");
+    connectToRoom(code, true);
+  }, [connectToRoom]);
+
+  const joinRoom = useCallback(() => {
+    if (joinCode.length !== 4) { setError("Enter a 4-character code"); return; }
+    setTab("join");
+    connectToRoom(joinCode.toUpperCase(), false);
+  }, [joinCode, connectToRoom]);
+
+  const startGame = useCallback(() => {
+    if (!conn) return;
+    const config = {
+      mode, gridSize, playerCount: 2,
+      powers: [0, 1],
+      ...wc,
+      timer: 0,
+      ai: false,
+    };
+    conn.setConfig(config);
+    setTimeout(() => conn.start(), 100);
+  }, [conn, mode, gridSize, wc]);
+
+  const copyCode = useCallback(() => {
+    navigator.clipboard.writeText(roomCode).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [roomCode]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { if (conn) conn.close(); };
+  }, [conn]);
+
+  const isHost = you === 0;
+  const opponentJoined = players.length >= 2;
+
+  return (
+    <div style={{ minHeight: "100dvh", background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none", transition: "background 0.3s" }}>
+      <div style={{ background: t.card, borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: t.cardShadow, animation: "slideUp 0.4s cubic-bezier(0.16,1,0.3,1)", transition: "background 0.3s, box-shadow 0.3s" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <button className="btn-hover" onClick={onBack} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: t.textLabel }}>←</button>
+          <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.5px", textAlign: "center", color: t.text, flex: 1 }}>Play Online</h1>
+          <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, opacity: 0.6 }}>{dark ? "☀" : "☾"}</button>
+        </div>
+
+        {error && (
+          <div style={{ marginTop: 16, padding: "8px 14px", borderRadius: 8, background: "#FDE8E7", color: "#F25C54", fontSize: 13, fontWeight: 500, textAlign: "center", animation: "slideUp 0.2s ease-out" }}>
+            {error}
+          </div>
+        )}
+
+        {tab === "menu" && (
+          <div style={{ marginTop: 32 }}>
+            <button className="btn-hover" onClick={createRoom} style={{
+              width: "100%", padding: 16, borderRadius: 12, border: "none", fontSize: 15, fontWeight: 600,
+              cursor: "pointer", background: t.btnPrimary, color: t.btnPrimaryText,
+              fontFamily: "inherit", marginBottom: 12,
+            }}>Create Room</button>
+            <div style={{ fontSize: 12, color: t.textLabel, textAlign: "center", textTransform: "uppercase", letterSpacing: "0.5px", margin: "16px 0" }}>or join a friend</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="text"
+                placeholder="ABCD"
+                maxLength={4}
+                value={joinCode}
+                onChange={e => setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+                style={{
+                  flex: 1, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${t.border}`,
+                  fontSize: 18, fontWeight: 700, textAlign: "center", letterSpacing: 6,
+                  fontFamily: "inherit", background: t.surface, color: t.text, outline: "none",
+                }}
+              />
+              <button className="btn-hover" onClick={joinRoom} style={{
+                padding: "12px 20px", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600,
+                cursor: "pointer", background: "#4A7BF7", color: "#fff", fontFamily: "inherit",
+              }}>Join</button>
+            </div>
+          </div>
+        )}
+
+        {(tab === "create" || tab === "join") && (
+          <div style={{ marginTop: 24 }}>
+            {/* Room code display */}
+            <div style={{ textAlign: "center", marginBottom: 24 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Room Code</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                <span style={{ fontSize: 36, fontWeight: 800, letterSpacing: 8, color: "#4A7BF7" }}>{roomCode}</span>
+                <button className="btn-hover" onClick={copyCode} style={{
+                  background: "none", border: `1.5px solid ${t.border}`, borderRadius: 8,
+                  padding: "6px 10px", fontSize: 12, cursor: "pointer", color: t.textMuted, fontFamily: "inherit",
+                }}>{copied ? "Copied!" : "Copy"}</button>
+              </div>
+            </div>
+
+            {/* Players */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Players</div>
+              {[0, 1].map(slot => {
+                const p = players.find(p => p.slot === slot);
+                return (
+                  <div key={slot} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                    borderRadius: 10, background: t.surface, marginBottom: 4,
+                    transition: "background 0.2s",
+                  }}>
+                    <div style={{
+                      width: 10, height: 10, borderRadius: "50%",
+                      background: p ? PLAYERS[slot].fill : t.border,
+                      transition: "background 0.3s",
+                    }} />
+                    <span style={{ fontSize: 14, fontWeight: 500, flex: 1, color: p ? t.text : t.textFaint }}>
+                      {p ? `${p.name}${slot === you ? " (you)" : ""}` : "Waiting..."}
+                    </span>
+                    {p && slot === 0 && <span style={{ fontSize: 11, color: "#4A7BF7", fontWeight: 600 }}>HOST</span>}
+                    {!p && (
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: t.textFaint, animation: "pulse 1.5s infinite" }} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Host: game config + start button */}
+            {isHost && (
+              <>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Mode</div>
+                  <div style={{ display: "flex", background: t.surfaceAlt, borderRadius: 10, padding: 3, gap: 2 }}>
+                    {["normal", "powers"].map(m => (
+                      <button key={m} onClick={() => setMode(m)} style={{
+                        flex: 1, padding: "8px 0", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 500,
+                        cursor: "pointer", transition: "all 0.2s", fontFamily: "inherit",
+                        background: mode === m ? t.card : "transparent", color: mode === m ? t.text : t.textMuted,
+                        boxShadow: mode === m ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                      }}>{m === "normal" ? "Normal" : "Powers"}</button>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Grid size</div>
+                    <span style={{ fontSize: 18, fontWeight: 700, color: "#4A7BF7" }}>{gridSize}x{gridSize}</span>
+                  </div>
+                  <input type="range" min={7} max={20} value={gridSize} onChange={e => setGridSize(+e.target.value)} style={{ width: "100%", marginTop: 6, cursor: "pointer" }} />
+                </div>
+                <button className="btn-hover" onClick={startGame} disabled={!opponentJoined} style={{
+                  width: "100%", padding: 14, borderRadius: 12, border: "none", fontSize: 15, fontWeight: 600,
+                  cursor: opponentJoined ? "pointer" : "default", background: t.btnPrimary, color: t.btnPrimaryText,
+                  fontFamily: "inherit", opacity: opponentJoined ? 1 : 0.4,
+                  transition: "opacity 0.15s",
+                }}>
+                  {opponentJoined ? "Start Game" : "Waiting for opponent..."}
+                </button>
+              </>
+            )}
+
+            {/* Guest: waiting for host to start */}
+            {!isHost && status === "connected" && (
+              <div style={{ textAlign: "center", padding: "16px 0" }}>
+                <div style={{ fontSize: 14, color: t.textMuted }}>
+                  {opponentJoined ? "Waiting for host to start..." : "Connecting..."}
+                </div>
+                <div style={{ marginTop: 12, display: "flex", justifyContent: "center", gap: 4 }}>
+                  {[0, 1, 2].map(i => (
+                    <div key={i} style={{
+                      width: 6, height: 6, borderRadius: "50%", background: "#4A7BF7",
+                      animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+                    }} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Setup({ onStart, onOnline, dark, setDark }) {
   const t = useTheme();
   const [mode, setMode] = useState("normal");
   const [gridSize, setGridSize] = useState(12);
@@ -407,6 +532,13 @@ function Setup({ onStart, dark, setDark }) {
             fontFamily: "inherit", marginTop: 24, opacity: hasDupes ? 0.4 : 1,
             transition: "opacity 0.15s, transform 0.12s, box-shadow 0.12s",
           }}>Start Game</button>
+        <button className="btn-hover" onClick={onOnline}
+          style={{
+            width: "100%", padding: 14, borderRadius: 12, border: `1.5px solid #4A7BF7`, fontSize: 15, fontWeight: 600,
+            cursor: "pointer", background: "transparent", color: "#4A7BF7",
+            fontFamily: "inherit", marginTop: 10,
+            transition: "transform 0.12s, box-shadow 0.12s",
+          }}>Play Online</button>
       </div>
     </div>
   );
@@ -623,7 +755,7 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
 export default function MegaTicTacToe() {
   const [dark, setDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const theme = THEMES[dark ? "dark" : "light"];
-  const [screen, setScreen] = useState("setup");
+  const [screen, setScreen] = useState("setup"); // setup | game | review | online-lobby | online-game | online-review
   const [config, setConfig] = useState(null);
   const [board, setBoard] = useState([]);
   const [cp, setCp] = useState(0);
@@ -643,6 +775,12 @@ export default function MegaTicTacToe() {
   const [timeLeft, setTimeLeft] = useState(0);
   const timerRef = useRef(null);
 
+  // Online multiplayer state
+  const [onlineConn, setOnlineConn] = useState(null);
+  const [onlineSlot, setOnlineSlot] = useState(-1);
+  const [onlinePlayers, setOnlinePlayers] = useState([]);
+  const onlineConnRef = useRef(null);
+
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
 
   const startGame = useCallback((cfg) => {
@@ -658,6 +796,86 @@ export default function MegaTicTacToe() {
     setZoom(Math.min(52, Math.max(22, Math.floor(vw / cfg.gridSize))));
     setScreen("game");
   }, []);
+
+  // Online: receive server state and apply it
+  const applyOnlineState = useCallback((msg) => {
+    if (msg.config) setConfig(msg.config);
+    if (msg.board) setBoard(msg.board);
+    if (msg.cp !== undefined) setCp(msg.cp);
+    if (msg.turn !== undefined) setTurn(msg.turn);
+    if (msg.globalTurn !== undefined) setGlobalTurn(msg.globalTurn);
+    if (msg.scores) setScores(msg.scores);
+    if (msg.cooldowns) setCooldowns(msg.cooldowns);
+    if (msg.playerTurns) setPlayerTurns(msg.playerTurns);
+    if (msg.lastMove !== undefined) setLastMove(msg.lastMove);
+    if (msg.winner !== undefined) setWinner(msg.winner);
+    if (msg.isDraw !== undefined) setIsDraw(msg.isDraw);
+    if (msg.winCells) setWinCells(msg.winCells);
+    if (msg.pwr) setPwr(msg.pwr);
+    if (msg.timeLeft !== undefined) setTimeLeft(msg.timeLeft);
+    if (msg.you !== undefined) setOnlineSlot(msg.you);
+    if (msg.players) setOnlinePlayers(msg.players);
+
+    if (msg.config?.gridSize) {
+      const vw = Math.min(window.innerWidth - 32, 600);
+      setZoom(Math.min(52, Math.max(22, Math.floor(vw / msg.config.gridSize))));
+    }
+
+    if (msg.phase === "playing") setScreen("online-game");
+    else if (msg.phase === "review") setScreen("online-review");
+    else if (msg.phase === "lobby") setScreen("online-lobby");
+  }, []);
+
+  const handleOnlineGameStart = useCallback((connection, msg) => {
+    onlineConnRef.current = connection;
+    setOnlineConn(connection);
+    setHistory([]);
+    setMsg(null);
+    applyOnlineState(msg);
+  }, [applyOnlineState]);
+
+  // Online: set up message listener when connection changes
+  useEffect(() => {
+    if (!onlineConn) return;
+    const handler = (msg) => {
+      if (msg.type === "timer-tick") {
+        setTimeLeft(msg.timeLeft);
+        return;
+      }
+      if (msg.type === "opponent-disconnected") {
+        toast("Opponent disconnected");
+        return;
+      }
+      if (msg.type === "player-joined") {
+        setOnlinePlayers(prev => {
+          if (prev.find(p => p.slot === msg.slot)) return prev;
+          return [...prev, { slot: msg.slot, name: msg.name }];
+        });
+        toast(`${msg.name} joined`);
+        return;
+      }
+      if (msg.type === "player-left") {
+        setOnlinePlayers(prev => prev.filter(p => p.slot !== msg.slot));
+        toast("Opponent left");
+        return;
+      }
+      if (msg.type === "error") {
+        toast(msg.message);
+        return;
+      }
+      // Full state updates
+      if (msg.board || msg.phase) {
+        applyOnlineState(msg);
+      }
+    };
+
+    // Re-add the handler (replaces the lobby handler)
+    const wsHandler = (e) => {
+      try { handler(JSON.parse(e.data)); } catch {}
+    };
+    onlineConn.ws.addEventListener("message", wsHandler);
+    return () => onlineConn.ws.removeEventListener("message", wsHandler);
+  }, [onlineConn, applyOnlineState, toast]);
 
   const endTurn = useCallback((newBoard, newCd) => {
     const s = scoreAndMark(newBoard, config.playerCount, config.lineLen, scores);
@@ -774,6 +992,12 @@ export default function MegaTicTacToe() {
   }, [history, toast]);
 
   const handleClick = useCallback((r, c) => {
+    // Online mode: send move to server
+    if (screen === "online-game") {
+      if (cp !== onlineSlot) return; // not your turn
+      if (onlineConnRef.current) onlineConnRef.current.move(r, c);
+      return;
+    }
     if (screen !== "game") return;
     if (config.ai && cp === 1) return; // AI's turn, ignore clicks
     const cell = board[r][c];
@@ -851,21 +1075,27 @@ export default function MegaTicTacToe() {
 
     setBoard(b);
     endTurn(b, { ...cooldowns });
-  }, [screen, board, config, cp, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
+  }, [screen, board, config, cp, onlineSlot, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
 
   const togglePower = useCallback(() => {
+    if (screen === "online-game") {
+      if (onlineConnRef.current) onlineConnRef.current.powerToggle();
+      return;
+    }
     if (pwr.active && !pwr.firstDone) { setPwr({ ...pwr, active: false, used: false }); return; }
     if (pwr.active && pwr.firstDone) return; // can't cancel after placing normal tile
     const power = POWERS[config.powers[cp]];
     toast("Place your tile, then use your power");
     setPwr({ ...pwr, active: true, used: true });
-  }, [pwr, config, cp, toast]);
+  }, [screen, pwr, config, cp, toast]);
 
   const themedCss = `:root { ${themeVars(theme)} }\n${css}`;
-  if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
+  if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} onOnline={() => setScreen("online-lobby")} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
+  if (screen === "online-lobby") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><OnlineLobby onBack={() => { if (onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} onGameStart={handleOnlineGameStart} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
 
-  const isReview = screen === "review";
-  const isPow = config.mode === "powers";
+  const isOnline = screen === "online-game" || screen === "online-review";
+  const isReview = screen === "review" || screen === "online-review";
+  const isPow = config?.mode === "powers";
   const power = isPow ? POWERS[config.powers[cp]] : null;
   const cd = cooldowns[cp] || 0;
   const hasActiveGhost = isPow && power?.id === "ghost" && board.some(row => row.some(c => c && c.owner === cp && c.visible === false));
@@ -891,13 +1121,13 @@ export default function MegaTicTacToe() {
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", padding: "10px 16px", gap: 10 }}>
-              <button className="btn-hover" onClick={() => setScreen("setup")} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "var(--textLabel)" }}>←</button>
+              <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "var(--textLabel)" }}>←</button>
               <div style={{ width: 12, height: 12, borderRadius: "50%", background: playerColor.fill, boxShadow: `0 0 0 3px ${playerColor.light}`, transition: "background 0.3s, box-shadow 0.3s" }} />
               <span key={cp} style={{ fontSize: 15, fontWeight: 600, flex: 1, color: playerColor.fill, animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)" }}>
-                {config.ai && cp === 1 ? "AI thinking..." : `${playerColor.name}'s turn`}
+                {isOnline ? (cp === onlineSlot ? "Your turn" : "Opponent's turn") : config.ai && cp === 1 ? "AI thinking..." : `${playerColor.name}'s turn`}
               </span>
               <span style={{ fontSize: 12, color: "var(--textLabel)" }}>Turn {turn}</span>
-              {history.length > 0 && !pwr.firstDone && (
+              {!isOnline && history.length > 0 && !pwr.firstDone && (
                 <button className="btn-hover" onClick={undo} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, cursor: "pointer", padding: "4px 10px", color: "var(--textMuted)", fontFamily: "inherit" }}>Undo</button>
               )}
             </div>
@@ -960,13 +1190,13 @@ export default function MegaTicTacToe() {
 
         {/* Board */}
         <Board board={board} onCellClick={handleClick} lastMove={lastMove} winCells={winCells}
-          currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={cp} />
+          currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={isOnline ? onlineSlot : cp} />
 
         {/* Bottom bar */}
         {isReview ? (
           <div style={{ display: "flex", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1)" }}>
-            <button className="btn-hover" onClick={() => setScreen("setup")} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }}>Setup</button>
-            <button className="btn-hover" onClick={() => startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--btnPrimary)", color: "var(--btnPrimaryText)", fontFamily: "inherit" }}>Play Again</button>
+            <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }}>{isOnline ? "Leave" : "Setup"}</button>
+            <button className="btn-hover" onClick={() => isOnline && onlineConnRef.current ? onlineConnRef.current.rematch() : startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--btnPrimary)", color: "var(--btnPrimaryText)", fontFamily: "inherit" }}>{isOnline ? "Rematch" : "Play Again"}</button>
           </div>
         ) : isPow && (
           <div key={cp} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.2s cubic-bezier(0.16,1,0.3,1)" }}>

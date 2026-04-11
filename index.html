@@ -10,6 +10,7 @@
     <meta name="description" content="Mega Tic Tac Toe — a strategic multiplayer board game with powers, large grids, and customisable rules." />
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Mega Tic Tac Toe</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -26,5 +27,10 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+      }
+    </script>
   </body>
 </html>
