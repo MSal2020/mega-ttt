@@ -1,7 +1,7 @@
 import {
   makeBoard, cloneBoard, scoreAndMark, revealGhosts,
   isBoardFull, getScoredCells, POWERS,
-} from "../src/gameLogic.js";
+} from "../lib/gameLogic.js";
 
 /**
  * PartyKit server for Mega Tic Tac Toe online multiplayer.

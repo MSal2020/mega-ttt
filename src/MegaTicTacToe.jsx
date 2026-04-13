@@ -3,8 +3,9 @@ import {
   PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
   findLines, revealGhosts, scoreAndMark, aiPickMove,
   isBoardFull, getScoredCells, generateRoomCode,
-} from "./gameLogic.js";
+} from "../lib/gameLogic.js";
 import { createConnection } from "./multiplayer.js";
+import { getStats, recordGame, clearStats, getTotalGames, getTotalWins, getWinRate } from "./stats.js";
 
 const THEMES = {
   light: {
@@ -68,6 +69,91 @@ function Collapse({ open, maxH = 400, children }) {
       overflow: "hidden", transition: "max-height 0.35s cubic-bezier(0.16,1,0.3,1), opacity 0.25s ease",
       willChange: "max-height, opacity",
     }}>{children}</div>
+  );
+}
+
+function StatsScreen({ onBack, dark, setDark }) {
+  const t = useTheme();
+  const [stats, setStats] = useState(getStats);
+  const total = getTotalGames(stats);
+  const wins = getTotalWins(stats);
+  const rate = getWinRate(stats);
+
+  const modes = [
+    { key: "local", label: "Local", icon: "👥" },
+    { key: "ai", label: "vs AI", icon: "🤖" },
+    { key: "online", label: "Online", icon: "🌐" },
+  ];
+
+  const resultColors = { win: "#4DAA6D", loss: "#F25C54", draw: "#F2A93B" };
+  const resultLabels = { win: "Won", loss: "Lost", draw: "Draw" };
+
+  return (
+    <div style={{ minHeight: "100dvh", background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none", transition: "background 0.3s" }}>
+      <div style={{ background: t.card, borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: t.cardShadow, animation: "slideUp 0.4s cubic-bezier(0.16,1,0.3,1)", transition: "background 0.3s, box-shadow 0.3s" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <button className="btn-hover" onClick={onBack} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: t.textLabel }}>←</button>
+          <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.5px", textAlign: "center", color: t.text, flex: 1 }}>Stats</h1>
+          <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, opacity: 0.6 }}>{dark ? "☀" : "☾"}</button>
+        </div>
+
+        {/* Summary */}
+        <div style={{ display: "flex", gap: 8, marginTop: 24 }}>
+          {[
+            { label: "Games", value: total },
+            { label: "Wins", value: wins },
+            { label: "Win Rate", value: `${rate}%` },
+          ].map(s => (
+            <div key={s.label} style={{ flex: 1, background: t.surface, borderRadius: 10, padding: "14px 10px", textAlign: "center", transition: "background 0.3s" }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: t.text }}>{s.value}</div>
+              <div style={{ fontSize: 11, color: t.textLabel, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.5px" }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Per-mode breakdown */}
+        <div style={{ marginTop: 24 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>By Mode</div>
+          {modes.map(m => {
+            const s = stats[m.key] || { wins: 0, losses: 0, draws: 0, games: 0 };
+            return (
+              <div key={m.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, background: t.surface, marginBottom: 4 }}>
+                <span style={{ fontSize: 16 }}>{m.icon}</span>
+                <span style={{ fontSize: 14, fontWeight: 500, flex: 1, color: t.text }}>{m.label}</span>
+                <span style={{ fontSize: 12, color: "#4DAA6D", fontWeight: 600 }}>{s.wins}W</span>
+                <span style={{ fontSize: 12, color: "#F25C54", fontWeight: 600 }}>{s.losses}L</span>
+                <span style={{ fontSize: 12, color: "#F2A93B", fontWeight: 600 }}>{s.draws}D</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Recent games */}
+        {stats.history?.length > 0 && (
+          <div style={{ marginTop: 24 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Recent Games</div>
+            <div style={{ maxHeight: 200, overflow: "auto" }}>
+              {stats.history.map((g, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 8, background: i % 2 === 0 ? t.surface : "transparent", fontSize: 13 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: resultColors[g.result], flexShrink: 0 }} />
+                  <span style={{ color: resultColors[g.result], fontWeight: 600, width: 36 }}>{resultLabels[g.result]}</span>
+                  <span style={{ color: t.textMuted, flex: 1 }}>{g.mode === "ai" ? "vs AI" : g.mode} · {g.gridSize}x{g.gridSize}</span>
+                  <span style={{ color: t.textFaint, fontSize: 11 }}>{new Date(g.date).toLocaleDateString()}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {total > 0 && (
+          <button className="btn-hover" onClick={() => { if (confirm("Clear all stats?")) setStats(clearStats()); }} style={{
+            width: "100%", padding: 10, borderRadius: 10, border: `1.5px solid ${t.border}`,
+            background: "transparent", fontSize: 13, color: t.textLabel, cursor: "pointer",
+            fontFamily: "inherit", marginTop: 20,
+          }}>Clear Stats</button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -328,7 +414,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   );
 }
 
-function Setup({ onStart, onOnline, dark, setDark }) {
+function Setup({ onStart, onOnline, onStats, dark, setDark }) {
   const t = useTheme();
   const [mode, setMode] = useState("normal");
   const [gridSize, setGridSize] = useState(12);
@@ -539,6 +625,12 @@ function Setup({ onStart, onOnline, dark, setDark }) {
             fontFamily: "inherit", marginTop: 10,
             transition: "transform 0.12s, box-shadow 0.12s",
           }}>Play Online</button>
+        <button className="btn-hover" onClick={onStats}
+          style={{
+            width: "100%", padding: 10, borderRadius: 12, border: "none", fontSize: 13,
+            cursor: "pointer", background: "transparent", color: t.textLabel,
+            fontFamily: "inherit", marginTop: 6,
+          }}>View Stats</button>
       </div>
     </div>
   );
@@ -877,6 +969,34 @@ export default function MegaTicTacToe() {
     return () => onlineConn.ws.removeEventListener("message", wsHandler);
   }, [onlineConn, applyOnlineState, toast]);
 
+  // Record game stats when entering review screen
+  const recordedRef = useRef(null);
+  useEffect(() => {
+    if (screen !== "review" && screen !== "online-review") {
+      recordedRef.current = null;
+      return;
+    }
+    // Avoid double-recording the same game
+    const key = `${screen}-${globalTurn}-${winner}-${isDraw}`;
+    if (recordedRef.current === key) return;
+    recordedRef.current = key;
+
+    const isOnlineGame = screen === "online-review";
+    const mode = isOnlineGame ? "online" : config?.ai ? "ai" : "local";
+    let result;
+    if (isDraw) {
+      result = "draw";
+    } else if (mode === "online") {
+      result = winner === onlineSlot ? "win" : "loss";
+    } else if (mode === "ai") {
+      result = winner === 0 ? "win" : "loss";
+    } else {
+      // local: player 0 winning counts as "win"
+      result = winner === 0 ? "win" : "loss";
+    }
+    recordGame({ mode, result, gridSize: config?.gridSize });
+  }, [screen, winner, isDraw, config, onlineSlot, globalTurn]);
+
   const endTurn = useCallback((newBoard, newCd) => {
     const s = scoreAndMark(newBoard, config.playerCount, config.lineLen, scores);
     for (let p = 0; p < config.playerCount; p++) {
@@ -1090,7 +1210,8 @@ export default function MegaTicTacToe() {
   }, [screen, pwr, config, cp, toast]);
 
   const themedCss = `:root { ${themeVars(theme)} }\n${css}`;
-  if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} onOnline={() => setScreen("online-lobby")} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
+  if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} onOnline={() => setScreen("online-lobby")} onStats={() => setScreen("stats")} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
+  if (screen === "stats") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><StatsScreen onBack={() => setScreen("setup")} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
   if (screen === "online-lobby") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><OnlineLobby onBack={() => { if (onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} onGameStart={handleOnlineGameStart} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
 
   const isOnline = screen === "online-game" || screen === "online-review";

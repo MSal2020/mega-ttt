@@ -1,4 +1,5 @@
 {
   "name": "mega-ttt",
-  "main": "party/index.js"
+  "main": "party/index.js",
+  "compatibilityDate": "2026-04-13"
 }
