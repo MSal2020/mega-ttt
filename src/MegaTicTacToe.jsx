@@ -263,10 +263,9 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
     });
   }, [roomCode]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => { if (conn) conn.close(); };
-  }, [conn]);
+  // Note: no cleanup-on-unmount here — when the game starts, the lobby
+  // unmounts but the parent takes ownership of the connection via onGameStart.
+  // Explicit "Back" button handles closing.
 
   const isHost = you === 0;
   const opponentJoined = players.length >= 2;
@@ -1114,7 +1113,8 @@ export default function MegaTicTacToe() {
   const handleClick = useCallback((r, c) => {
     // Online mode: send move to server
     if (screen === "online-game") {
-      if (cp !== onlineSlot) return; // not your turn
+      if (onlinePlayers.length < 2) { toast("Waiting for opponent"); return; }
+      if (cp !== onlineSlot) { toast("Opponent's turn"); return; }
       if (onlineConnRef.current) onlineConnRef.current.move(r, c);
       return;
     }
@@ -1195,7 +1195,7 @@ export default function MegaTicTacToe() {
 
     setBoard(b);
     endTurn(b, { ...cooldowns });
-  }, [screen, board, config, cp, onlineSlot, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
+  }, [screen, board, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
 
   const togglePower = useCallback(() => {
     if (screen === "online-game") {

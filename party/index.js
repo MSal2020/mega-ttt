@@ -40,13 +40,11 @@ export default class MegaTTTServer {
   }
 
   onClose(conn) {
-    const idx = this.players.findIndex(p => p.id === conn.id);
-    if (idx === -1) return;
-    const player = this.players[idx];
-    this.players.splice(idx, 1);
+    const player = this.players.find(p => p.id === conn.id);
+    if (!player) return;
+    // Mark disconnected but keep slot reserved so they can reclaim on reconnect
+    player.disconnected = true;
     this.broadcast({ type: "player-left", slot: player.slot, name: player.name });
-
-    // If game is playing and a player leaves, pause
     if (this.phase === "playing") {
       this.stopTimer();
       this.broadcast({ type: "opponent-disconnected" });
@@ -69,21 +67,33 @@ export default class MegaTTTServer {
   }
 
   handleJoin(conn, data) {
-    // Already in room?
-    if (this.players.find(p => p.id === conn.id)) {
-      conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: this.getSlot(conn.id) }));
+    // Reclaim slot if a player with this id was previously here
+    const existing = this.players.find(p => p.id === conn.id);
+    if (existing) {
+      existing.disconnected = false;
+      conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: existing.slot }));
+      this.broadcast({ type: "player-joined", slot: existing.slot, name: existing.name, playerCount: this.activePlayerCount() });
       return;
     }
-    if (this.players.length >= 2) {
+    const activeCount = this.players.filter(p => !p.disconnected).length;
+    if (activeCount >= 2) {
       conn.send(JSON.stringify({ type: "error", message: "Room is full" }));
       return;
     }
-    const slot = this.players.length === 0 ? 0 : 1;
+    // Take the lowest free slot (handles case where slot 0 was freed)
+    const takenSlots = new Set(this.players.filter(p => !p.disconnected).map(p => p.slot));
+    const slot = takenSlots.has(0) ? 1 : 0;
     const name = (data.name || `Player ${slot + 1}`).slice(0, 20);
-    this.players.push({ id: conn.id, name, slot });
+    // Remove any stale disconnected entry occupying this slot
+    this.players = this.players.filter(p => p.slot !== slot || !p.disconnected);
+    this.players.push({ id: conn.id, name, slot, disconnected: false });
 
     conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: slot }));
-    this.broadcast({ type: "player-joined", slot, name, playerCount: this.players.length });
+    this.broadcast({ type: "player-joined", slot, name, playerCount: this.activePlayerCount() });
+  }
+
+  activePlayerCount() {
+    return this.players.filter(p => !p.disconnected).length;
   }
 
   handleConfig(conn, data) {
@@ -95,7 +105,7 @@ export default class MegaTTTServer {
 
   handleStart(conn) {
     if (this.getSlot(conn.id) !== 0) return; // only host
-    if (this.players.length < 2) {
+    if (this.activePlayerCount() < 2) {
       conn.send(JSON.stringify({ type: "error", message: "Need 2 players" }));
       return;
     }
