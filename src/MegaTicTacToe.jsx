@@ -238,8 +238,20 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   // Config state (host only)
   const [mode, setMode] = useState("normal");
   const [gridSize, setGridSize] = useState(12);
-  const autoWc = getWinConditions(gridSize, 2);
-  const wc = autoWc;
+  const [powers, setPowers] = useState([0, 1, 2, 3]);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [customLineLen, setCustomLineLen] = useState(null);
+  const [customLinesNeeded, setCustomLinesNeeded] = useState(null);
+  const [timerEnabled, setTimerEnabled] = useState(false);
+  const [timerSeconds, setTimerSeconds] = useState(15);
+  const playerCount = 2; // server currently supports 2 players online
+  const autoWc = getWinConditions(gridSize, playerCount);
+  const wc = {
+    lineLen: customLineLen ?? autoWc.lineLen,
+    linesNeeded: customLinesNeeded ?? autoWc.linesNeeded,
+  };
+  const usedPowers = powers.slice(0, playerCount);
+  const hasDupes = mode === "powers" && new Set(usedPowers).size < usedPowers.length;
 
   const connectToRoom = useCallback((code, isHost) => {
     setRoomCode(code);
@@ -312,16 +324,17 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
 
   const startGame = useCallback(() => {
     if (!conn) return;
+    if (hasDupes) return;
     const config = {
-      mode, gridSize, playerCount: 2,
-      powers: [0, 1],
+      mode, gridSize, playerCount,
+      powers: powers.slice(0, playerCount),
       ...wc,
-      timer: 0,
+      timer: timerEnabled ? timerSeconds : 0,
       ai: false,
     };
     conn.setConfig(config);
     setTimeout(() => conn.start(), 100);
-  }, [conn, mode, gridSize, wc]);
+  }, [conn, mode, gridSize, powers, wc, timerEnabled, timerSeconds, hasDupes]);
 
   const copyCode = useCallback(() => {
     navigator.clipboard.writeText(roomCode).then(() => {
@@ -419,6 +432,29 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
               </div>
             </div>
 
+            {/* Your name (editable in-lobby) */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Your Name</div>
+              <input
+                type="text"
+                placeholder="Enter your name"
+                maxLength={20}
+                value={playerName}
+                onChange={e => {
+                  const v = e.target.value;
+                  setPlayerName(v);
+                  localStorage.setItem("mtt-player-name", v);
+                  const trimmed = v.trim();
+                  if (conn && trimmed) conn.rename(trimmed);
+                }}
+                style={{
+                  width: "100%", padding: "8px 12px", borderRadius: 10, border: `1.5px solid ${t.border}`,
+                  fontSize: 14, fontWeight: 500, fontFamily: "inherit", background: t.surface, color: t.text,
+                  outline: "none", boxSizing: "border-box",
+                }}
+              />
+            </div>
+
             {/* Players */}
             <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Players</div>
@@ -463,17 +499,108 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                     ))}
                   </div>
                 </div>
-                <div style={{ marginBottom: 20 }}>
+
+                <div style={{ marginBottom: 16 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Grid size</div>
-                    <span style={{ fontSize: 18, fontWeight: 700, color: "#4A7BF7" }}>{gridSize}x{gridSize}</span>
+                    <span style={{ fontSize: 18, fontWeight: 700, color: "#4A7BF7" }}>{gridSize}×{gridSize}</span>
                   </div>
                   <input type="range" min={7} max={20} value={gridSize} onChange={e => setGridSize(+e.target.value)} style={{ width: "100%", marginTop: 6, cursor: "pointer" }} />
                 </div>
-                <button className="btn-hover" onClick={startGame} disabled={!opponentJoined} style={{
+
+                <Collapse open={mode === "powers"} maxH={260}>
+                  <div style={{ marginBottom: 16, paddingBottom: 2 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Assign powers</div>
+                    {Array.from({ length: playerCount }).map((_, pi) => (
+                      <div key={pi} style={{ display: "flex", alignItems: "center", gap: 10, background: t.surface, borderRadius: 10, padding: "8px 12px", marginBottom: 6 }}>
+                        <div style={{ width: 10, height: 10, borderRadius: "50%", background: PLAYERS[pi].fill, flexShrink: 0 }} />
+                        <span style={{ fontSize: 13, fontWeight: 500, width: 48, flexShrink: 0, color: t.text }}>{PLAYERS[pi].name}</span>
+                        <select value={powers[pi]} onChange={e => { const p = [...powers]; p[pi] = +e.target.value; setPowers(p); }}
+                          style={{ flex: 1, padding: "6px 8px", borderRadius: 8, border: `1.5px solid ${t.border}`, fontSize: 13, fontFamily: "inherit", background: t.card, color: t.text }}>
+                          {POWERS.map((pw, wi) => <option key={wi} value={wi}>{pw.icon} {pw.name}</option>)}
+                        </select>
+                      </div>
+                    ))}
+                    {hasDupes && <p style={{ fontSize: 12, color: "#F25C54", marginTop: 4 }}>Each player should have a unique power</p>}
+                  </div>
+                </Collapse>
+
+                <div style={{ marginBottom: 4, background: t.surface, borderRadius: 10, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 12, color: t.textLabel, fontWeight: 500, marginBottom: 4 }}>Win condition</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: t.text }}>
+                    {wc.lineLen} in a row{wc.linesNeeded > 1 ? `, ${wc.linesNeeded} times` : ""}
+                    {(customLineLen !== null || customLinesNeeded !== null) && <span style={{ fontSize: 11, color: "#4A7BF7", marginLeft: 6 }}>custom</span>}
+                  </div>
+                </div>
+
+                <button onClick={() => setShowAdvanced(v => !v)} style={{
+                  width: "100%", padding: "10px 0", border: "none", background: "none",
+                  fontSize: 13, color: t.textLabel, cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+                }}>
+                  <span style={{ transform: showAdvanced ? "rotate(90deg)" : "rotate(0)", transition: "transform 0.2s", display: "inline-block" }}>▸</span>
+                  Advanced settings
+                </button>
+
+                <Collapse open={showAdvanced} maxH={400}>
+                  <div style={{ background: t.surface, borderRadius: 10, padding: "14px", marginTop: 4, marginBottom: 16 }}>
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Line length</div>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: customLineLen !== null ? "#4A7BF7" : t.text }}>{wc.lineLen}</span>
+                      </div>
+                      <input type="range" min={3} max={Math.min(gridSize, 8)} value={wc.lineLen}
+                        onChange={e => { const v = +e.target.value; setCustomLineLen(v === autoWc.lineLen ? null : v); }}
+                        style={{ width: "100%", cursor: "pointer" }} />
+                    </div>
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Lines to win</div>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: customLinesNeeded !== null ? "#4A7BF7" : t.text }}>{wc.linesNeeded}</span>
+                      </div>
+                      <input type="range" min={1} max={5} value={wc.linesNeeded}
+                        onChange={e => { const v = +e.target.value; setCustomLinesNeeded(v === autoWc.linesNeeded ? null : v); }}
+                        style={{ width: "100%", cursor: "pointer" }} />
+                    </div>
+                    <div style={{ marginTop: 14 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Turn timer</div>
+                        <button onClick={() => setTimerEnabled(v => !v)} style={{
+                          width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
+                          background: timerEnabled ? "#4A7BF7" : t.border, position: "relative", transition: "background 0.2s",
+                        }}>
+                          <div style={{
+                            width: 18, height: 18, borderRadius: "50%", background: t.card, position: "absolute", top: 2,
+                            left: timerEnabled ? 20 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                          }} />
+                        </button>
+                      </div>
+                      <Collapse open={timerEnabled} maxH={120}>
+                        <div style={{ paddingBottom: 2 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                            <span style={{ fontSize: 12, color: t.textMuted }}>Seconds per turn</span>
+                            <span style={{ fontSize: 16, fontWeight: 700, color: "#4A7BF7" }}>{timerSeconds}s</span>
+                          </div>
+                          <input type="range" min={5} max={60} step={5} value={timerSeconds}
+                            onChange={e => setTimerSeconds(+e.target.value)}
+                            style={{ width: "100%", cursor: "pointer" }} />
+                        </div>
+                      </Collapse>
+                    </div>
+                    {(customLineLen !== null || customLinesNeeded !== null) && (
+                      <button className="btn-hover" onClick={() => { setCustomLineLen(null); setCustomLinesNeeded(null); }} style={{
+                        width: "100%", padding: 8, borderRadius: 8, border: `1.5px solid ${t.border}`,
+                        background: t.card, fontSize: 12, color: t.textLabel, cursor: "pointer",
+                        fontFamily: "inherit", marginTop: 10,
+                      }}>Reset to default</button>
+                    )}
+                  </div>
+                </Collapse>
+
+                <button className="btn-hover" onClick={startGame} disabled={!opponentJoined || hasDupes} style={{
                   width: "100%", padding: 14, borderRadius: 12, border: "none", fontSize: 15, fontWeight: 600,
-                  cursor: opponentJoined ? "pointer" : "default", background: t.btnPrimary, color: t.btnPrimaryText,
-                  fontFamily: "inherit", opacity: opponentJoined ? 1 : 0.4,
+                  cursor: (opponentJoined && !hasDupes) ? "pointer" : "default", background: t.btnPrimary, color: t.btnPrimaryText,
+                  fontFamily: "inherit", opacity: (opponentJoined && !hasDupes) ? 1 : 0.4,
                   transition: "opacity 0.15s",
                 }}>
                   {opponentJoined ? "Start Game" : "Waiting for opponent..."}

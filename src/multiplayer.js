@@ -42,6 +42,7 @@ export function createConnection(roomCode, onMessage) {
     isOpen() { return ws.readyState === 1; },
     send(msg) { return send(msg); },
     join(name) { lastName = name; return send({ type: "join", name }); },
+    rename(name) { lastName = name; return send({ type: "rename", name }); },
     setConfig(config) { return send({ type: "config", config }); },
     start() { return send({ type: "start" }); },
     move(r, c) { return send({ type: "move", r, c }); },

@@ -57,6 +57,7 @@ export default class MegaTTTServer {
 
     switch (data.type) {
       case "join": return this.handleJoin(conn, data);
+      case "rename": return this.handleRename(conn, data);
       case "config": return this.handleConfig(conn, data);
       case "start": return this.handleStart(conn);
       case "move": return this.handleMove(conn, data);
@@ -90,6 +91,15 @@ export default class MegaTTTServer {
 
     conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: slot }));
     this.broadcast({ type: "player-joined", slot, name, playerCount: this.activePlayerCount() });
+  }
+
+  handleRename(conn, data) {
+    const player = this.players.find(p => p.id === conn.id);
+    if (!player) return;
+    const name = (data.name || "").slice(0, 20).trim();
+    if (!name) return;
+    player.name = name;
+    this.broadcast({ type: "player-joined", slot: player.slot, name, playerCount: this.activePlayerCount() });
   }
 
   activePlayerCount() {
