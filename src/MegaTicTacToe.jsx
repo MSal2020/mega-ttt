@@ -5,7 +5,8 @@ import {
   isBoardFull, getScoredCells, generateRoomCode,
   getBlockSize, getPowerCd, isBlocked, pruneBlocks,
 } from "../lib/gameLogic.js";
-import { createConnection } from "./multiplayer.js";
+import { createConnection, subscribeToLobby } from "./multiplayer.js";
+import { sfx, haptic, soundEnabled, setSoundEnabled, hapticEnabled, setHapticEnabled } from "./sounds.js";
 import { getStats, recordGame, clearStats, getTotalGames, getTotalWins, getWinRate } from "./stats.js";
 
 const THEMES = {
@@ -71,6 +72,20 @@ const css = `
   @keyframes turnGlow { 0% { opacity: 0; } 35% { opacity: 0.55; } 100% { opacity: 0; } }
   select { color-scheme: light dark; }
 `;
+
+function ReconnectBanner() {
+  const [secs, setSecs] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setSecs(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ background: "#F59E0B", color: "#fff", padding: "6px 16px", fontSize: 13, fontWeight: 600, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+      <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff", animation: "pulse 1s ease-in-out infinite" }} />
+      Reconnecting{secs > 2 ? `... (${secs}s)` : "..."}
+    </div>
+  );
+}
 
 function Confetti({ color }) {
   const pieces = useMemo(() => {
@@ -246,6 +261,8 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const [timerEnabled, setTimerEnabled] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(15);
   const [playerCount, setPlayerCount] = useState(2);
+  const [isPublic, setIsPublic] = useState(false);
+  const [publicRooms, setPublicRooms] = useState([]);
   const autoWc = getWinConditions(gridSize, playerCount);
   const wc = {
     lineLen: customLineLen ?? autoWc.lineLen,
@@ -344,6 +361,40 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
     });
   }, [roomCode]);
 
+  const [linkCopied, setLinkCopied] = useState(false);
+  const copyLink = useCallback(() => {
+    const url = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    });
+  }, [roomCode]);
+
+  // When a room is created/joined, reflect the code in the URL so the host's
+  // browser URL is directly shareable and refresh-safe.
+  useEffect(() => {
+    if (!roomCode) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("room") !== roomCode) {
+      url.searchParams.set("room", roomCode);
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, [roomCode]);
+
+  // Auto-join from ?room=CODE on first mount
+  const autoJoinedRef = useRef(false);
+  useEffect(() => {
+    if (autoJoinedRef.current) return;
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get("room");
+    if (code && /^[A-Z0-9]{4}$/i.test(code)) {
+      autoJoinedRef.current = true;
+      setTab("join");
+      setJoinCode(code.toUpperCase());
+      connectToRoom(code.toUpperCase(), false);
+    }
+  }, [connectToRoom]);
+
   // Note: no cleanup-on-unmount here — when the game starts, the lobby
   // unmounts but the parent takes ownership of the connection via onGameStart.
   // Explicit "Back" button handles closing.
@@ -360,9 +411,17 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
       ...wc,
       timer: timerEnabled ? timerSeconds : 0,
       ai: false,
+      public: isPublic,
     };
     conn.setConfig(config);
-  }, [conn, isHost, mode, gridSize, playerCount, powers, wc.lineLen, wc.linesNeeded, timerEnabled, timerSeconds]);
+  }, [conn, isHost, mode, gridSize, playerCount, powers, wc.lineLen, wc.linesNeeded, timerEnabled, timerSeconds, isPublic]);
+
+  // Subscribe to public room list while on the browse tab
+  useEffect(() => {
+    if (tab !== "browse") return;
+    const sub = subscribeToLobby(setPublicRooms);
+    return () => sub.close();
+  }, [tab]);
 
   return (
     <div style={{ minHeight: "100dvh", background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none", transition: "background 0.3s" }}>
@@ -418,6 +477,52 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                 cursor: "pointer", background: "#4A7BF7", color: "#fff", fontFamily: "inherit",
               }}>Join</button>
             </div>
+            <button className="btn-hover" onClick={() => setTab("browse")} style={{
+              width: "100%", padding: 12, borderRadius: 10, border: `1.5px solid ${t.border}`, fontSize: 13, fontWeight: 500,
+              cursor: "pointer", background: t.surface, color: t.textLabel, fontFamily: "inherit", marginTop: 16,
+            }}>Browse public rooms</button>
+          </div>
+        )}
+
+        {tab === "browse" && (
+          <div style={{ marginTop: 24 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 }}>
+              Public rooms ({publicRooms.length})
+            </div>
+            {publicRooms.length === 0 ? (
+              <div style={{ padding: "24px 12px", textAlign: "center", color: t.textMuted, fontSize: 13, background: t.surface, borderRadius: 10 }}>
+                No public rooms right now.<br />
+                <span style={{ fontSize: 11 }}>Create one and mark it public to share.</span>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" }}>
+                {publicRooms.map(r => (
+                  <div key={r.code} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "10px 12px", borderRadius: 10, background: t.surface,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: t.text, letterSpacing: 2 }}>{r.code}</div>
+                      <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2 }}>
+                        {r.hostName} · {r.players}/{r.playerCount} · {r.gridSize}×{r.gridSize}
+                        {r.mode === "powers" && " · powers"}
+                        {r.teams && " · teams"}
+                      </div>
+                    </div>
+                    <button className="btn-hover" disabled={r.players >= r.playerCount} onClick={() => { setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
+                      padding: "6px 14px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
+                      cursor: r.players >= r.playerCount ? "default" : "pointer",
+                      background: r.players >= r.playerCount ? t.border : "#4A7BF7", color: "#fff", fontFamily: "inherit",
+                      opacity: r.players >= r.playerCount ? 0.5 : 1,
+                    }}>{r.players >= r.playerCount ? "Full" : "Join"}</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="btn-hover" onClick={() => setTab("menu")} style={{
+              width: "100%", padding: 10, borderRadius: 10, border: `1.5px solid ${t.border}`, fontSize: 13,
+              cursor: "pointer", background: "transparent", color: t.textLabel, fontFamily: "inherit", marginTop: 14,
+            }}>Back</button>
           </div>
         )}
 
@@ -443,7 +548,25 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                   background: "none", border: `1.5px solid ${t.border}`, borderRadius: 8,
                   padding: "6px 10px", fontSize: 12, cursor: "pointer", color: t.textMuted, fontFamily: "inherit",
                 }}>{copied ? "Copied!" : "Copy"}</button>
+                <button className="btn-hover" onClick={copyLink} style={{
+                  background: "none", border: `1.5px solid ${t.border}`, borderRadius: 8,
+                  padding: "6px 10px", fontSize: 12, cursor: "pointer", color: t.textMuted, fontFamily: "inherit",
+                }}>{linkCopied ? "Link copied!" : "Share link"}</button>
               </div>
+              {isHost && (
+                <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                  <span style={{ fontSize: 12, color: t.textMuted }}>List publicly</span>
+                  <button onClick={() => setIsPublic(v => !v)} style={{
+                    width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer",
+                    background: isPublic ? "#4A7BF7" : t.border, position: "relative", transition: "background 0.2s",
+                  }}>
+                    <div style={{
+                      width: 16, height: 16, borderRadius: "50%", background: t.card, position: "absolute", top: 2,
+                      left: isPublic ? 18 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                    }} />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Your name (editable in-lobby) */}
@@ -709,20 +832,53 @@ function Tutorial({ onClose }) {
   );
 }
 
-function Setup({ onStart, onOnline, onStats, dark, setDark }) {
+function Setup({ onStart, onOnline, onStats, onResume, dark, setDark }) {
+  const hasSaved = (() => {
+    try { return !!JSON.parse(localStorage.getItem("mtt-saved-game") || "null"); }
+    catch { return false; }
+  })();
+  // PWA install prompt
+  const [installEvent, setInstallEvent] = useState(null);
+  useEffect(() => {
+    const handler = (e) => { e.preventDefault(); setInstallEvent(e); };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+  const installApp = async () => {
+    if (!installEvent) return;
+    installEvent.prompt();
+    try { await installEvent.userChoice; } catch {}
+    setInstallEvent(null);
+  };
   const t = useTheme();
   const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem("mtt-tutorial-seen"));
   const closeTutorial = () => { localStorage.setItem("mtt-tutorial-seen", "1"); setShowTutorial(false); };
-  const [mode, setMode] = useState("normal");
-  const [gridSize, setGridSize] = useState(12);
-  const [playerCount, setPlayerCount] = useState(2);
-  const [powers, setPowers] = useState([0, 1, 2, 3]);
+  // Hydrate from localStorage (last-used config) if available
+  const saved = (() => {
+    try { return JSON.parse(localStorage.getItem("mtt-setup-config") || "null") || {}; }
+    catch { return {}; }
+  })();
+  const [mode, setMode] = useState(saved.mode || "normal");
+  const [gridSize, setGridSize] = useState(saved.gridSize ?? 12);
+  const [playerCount, setPlayerCount] = useState(saved.playerCount ?? 2);
+  const [powers, setPowers] = useState(saved.powers || [0, 1, 2, 3]);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [customLineLen, setCustomLineLen] = useState(null);
-  const [customLinesNeeded, setCustomLinesNeeded] = useState(null);
-  const [timerEnabled, setTimerEnabled] = useState(false);
-  const [timerSeconds, setTimerSeconds] = useState(15);
-  const [vsAI, setVsAI] = useState(false);
+  const [customLineLen, setCustomLineLen] = useState(saved.customLineLen ?? null);
+  const [customLinesNeeded, setCustomLinesNeeded] = useState(saved.customLinesNeeded ?? null);
+  const [timerEnabled, setTimerEnabled] = useState(saved.timerEnabled ?? false);
+  const [timerSeconds, setTimerSeconds] = useState(saved.timerSeconds ?? 15);
+  const [vsAI, setVsAI] = useState(saved.vsAI ?? false);
+  const [aiDifficulty, setAiDifficulty] = useState(saved.aiDifficulty || "medium");
+  const [teams, setTeams] = useState(saved.teams ?? false);
+  // Persist on every change
+  useEffect(() => {
+    try {
+      localStorage.setItem("mtt-setup-config", JSON.stringify({
+        mode, gridSize, playerCount, powers, customLineLen, customLinesNeeded,
+        timerEnabled, timerSeconds, vsAI, aiDifficulty, teams,
+      }));
+    } catch {}
+  }, [mode, gridSize, playerCount, powers, customLineLen, customLinesNeeded, timerEnabled, timerSeconds, vsAI, aiDifficulty, teams]);
   const autoWc = getWinConditions(gridSize, playerCount);
   const wc = {
     lineLen: customLineLen ?? autoWc.lineLen,
@@ -793,21 +949,54 @@ function Setup({ onStart, onOnline, onStats, dark, setDark }) {
           </div>
         </div>
 
-        {playerCount === 2 && (
+        {playerCount === 4 && (
           <div style={{ marginTop: 22, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Opponent</div>
-              <div style={{ fontSize: 13, color: t.textMuted, marginTop: 2 }}>{vsAI ? "Play vs AI" : "Local multiplayer"}</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Team mode</div>
+              <div style={{ fontSize: 13, color: t.textMuted, marginTop: 2 }}>{teams ? "Blue + Sage vs Coral + Amber" : "Free-for-all"}</div>
             </div>
-            <button onClick={() => setVsAI(v => !v)} style={{
+            <button onClick={() => setTeams(v => !v)} style={{
               width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
-              background: vsAI ? "#4A7BF7" : t.border, position: "relative", transition: "background 0.2s",
+              background: teams ? "#4A7BF7" : t.border, position: "relative", transition: "background 0.2s",
             }}>
               <div style={{
                 width: 18, height: 18, borderRadius: "50%", background: t.card, position: "absolute", top: 2,
-                left: vsAI ? 20 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                left: teams ? 20 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
               }} />
             </button>
+          </div>
+        )}
+
+        {playerCount === 2 && (
+          <div style={{ marginTop: 22 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase" }}>Opponent</div>
+                <div style={{ fontSize: 13, color: t.textMuted, marginTop: 2 }}>{vsAI ? "Play vs AI" : "Local multiplayer"}</div>
+              </div>
+              <button onClick={() => setVsAI(v => !v)} style={{
+                width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
+                background: vsAI ? "#4A7BF7" : t.border, position: "relative", transition: "background 0.2s",
+              }}>
+                <div style={{
+                  width: 18, height: 18, borderRadius: "50%", background: t.card, position: "absolute", top: 2,
+                  left: vsAI ? 20 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                }} />
+              </button>
+            </div>
+            <Collapse open={vsAI} maxH={80}>
+              <div style={{ display: "flex", background: t.surfaceAlt, borderRadius: 10, padding: 3, gap: 2, marginTop: 10 }}>
+                {["easy", "medium", "hard"].map(d => (
+                  <button key={d} onClick={() => setAiDifficulty(d)} style={{
+                    flex: 1, padding: "7px 0", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 500,
+                    cursor: "pointer", fontFamily: "inherit", textTransform: "capitalize",
+                    background: aiDifficulty === d ? t.card : "transparent",
+                    color: aiDifficulty === d ? t.text : t.textMuted,
+                    boxShadow: aiDifficulty === d ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                  }}>{d}</button>
+                ))}
+              </div>
+            </Collapse>
           </div>
         )}
 
@@ -909,7 +1098,14 @@ function Setup({ onStart, onOnline, onStats, dark, setDark }) {
           </div>
         </Collapse>
 
-        <button className="btn-hover" onClick={() => !hasDupes && onStart({ mode, gridSize, playerCount, powers: powers.slice(0, playerCount), ...wc, timer: timerEnabled ? timerSeconds : 0, ai: vsAI && playerCount === 2 })}
+        {hasSaved && onResume && (
+          <button className="btn-hover" onClick={onResume} style={{
+            width: "100%", padding: 12, borderRadius: 12, border: `1.5px solid ${t.btnPrimary}`, fontSize: 14, fontWeight: 600,
+            cursor: "pointer", background: t.surface, color: t.btnPrimary,
+            fontFamily: "inherit", marginTop: 18,
+          }}>Resume last game</button>
+        )}
+        <button className="btn-hover" onClick={() => !hasDupes && onStart({ mode, gridSize, playerCount, powers: powers.slice(0, playerCount), ...wc, timer: timerEnabled ? timerSeconds : 0, ai: vsAI && playerCount === 2, aiDifficulty, teams: teams && playerCount === 4 })}
           style={{
             width: "100%", padding: 14, borderRadius: 12, border: "none", fontSize: 15, fontWeight: 600,
             cursor: hasDupes ? "default" : "pointer", background: t.btnPrimary, color: t.btnPrimaryText,
@@ -923,6 +1119,13 @@ function Setup({ onStart, onOnline, onStats, dark, setDark }) {
             fontFamily: "inherit", marginTop: 10,
             transition: "transform 0.12s, box-shadow 0.12s",
           }}>Play Online</button>
+        {installEvent && (
+          <button className="btn-hover" onClick={installApp} style={{
+            width: "100%", padding: 10, borderRadius: 12, border: `1.5px solid ${t.border}`, fontSize: 13, fontWeight: 500,
+            cursor: "pointer", background: t.surface, color: t.textLabel,
+            fontFamily: "inherit", marginTop: 8,
+          }}>Install app</button>
+        )}
         <button className="btn-hover" onClick={onStats}
           style={{
             width: "100%", padding: 10, borderRadius: 12, border: "none", fontSize: 13,
@@ -934,7 +1137,7 @@ function Setup({ onStart, onOnline, onStats, dark, setDark }) {
   );
 }
 
-function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner, blocks = [], globalTurn = 1, tpSource = null }) {
+function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner, blocks = [], globalTurn = 1, tpSource = null, cursor = null }) {
   const t = useTheme();
   const n = board.length;
   const cellSize = Math.max(28, zoom);
@@ -1134,6 +1337,14 @@ function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, current
                   pointerEvents: "none",
                 }} />
               )}
+              {cursor && cursor[0] === r && cursor[1] === c && (
+                <div style={{
+                  position: "absolute", inset: -2, borderRadius: 4,
+                  border: `2px solid ${PLAYERS[currentPlayer].fill}`,
+                  boxShadow: `0 0 0 2px ${PLAYERS[currentPlayer].fill}22`,
+                  pointerEvents: "none",
+                }} />
+              )}
               {isTpSource && (
                 <div style={{
                   position: "absolute", inset: 1, borderRadius: 3,
@@ -1206,7 +1417,14 @@ function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, current
 export default function MegaTicTacToe() {
   const [dark, setDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const theme = THEMES[dark ? "dark" : "light"];
-  const [screen, setScreen] = useState("setup"); // setup | game | review | online-lobby | online-game | online-review
+  const [screen, setScreen] = useState(() => {
+    // Deep-link: ?room=CODE → open online lobby directly
+    try {
+      const code = new URL(window.location.href).searchParams.get("room");
+      if (code && /^[A-Z0-9]{4}$/i.test(code)) return "online-lobby";
+    } catch {}
+    return "setup";
+  }); // setup | game | review | online-lobby | online-game | online-review
   const [config, setConfig] = useState(null);
   const [board, setBoard] = useState([]);
   const [cp, setCp] = useState(0);
@@ -1222,6 +1440,9 @@ export default function MegaTicTacToe() {
   const [pwr, setPwr] = useState({ active: false, used: false, firstDone: false, tpSource: null });
   const [blocks, setBlocks] = useState([]); // active block areas: [{r,c,size,expiresAt,owner}]
   const [lastMoves, setLastMoves] = useState([]); // trail of recent moves: [[r,c], ...] newest first
+  const [cursor, setCursor] = useState(null); // keyboard cursor [r,c] or null
+  const [replayIdx, setReplayIdx] = useState(null); // review: history index being shown, null = final
+  const handleClickRef = useRef(null);
   const [zoom, setZoom] = useState(44);
   const zoomRef = useRef(44);
   const zoomTweenRef = useRef(null);
@@ -1246,8 +1467,27 @@ export default function MegaTicTacToe() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-      if (e.key === "+" || e.key === "=") { e.preventDefault(); tweenZoom(8); }
-      else if (e.key === "-" || e.key === "_") { e.preventDefault(); tweenZoom(-8); }
+      if (e.key === "+" || e.key === "=") { e.preventDefault(); tweenZoom(8); return; }
+      if (e.key === "-" || e.key === "_") { e.preventDefault(); tweenZoom(-8); return; }
+      // Board keyboard nav (arrow keys + Enter/Space)
+      const b = boardRef.current;
+      const n = b && b.length;
+      if (!n) return;
+      const move = (dr, dc) => {
+        setCursor(cur => {
+          const [r, c] = cur || [Math.floor(n/2), Math.floor(n/2)];
+          return [Math.max(0, Math.min(n-1, r+dr)), Math.max(0, Math.min(n-1, c+dc))];
+        });
+      };
+      if (e.key === "ArrowUp") { e.preventDefault(); move(-1, 0); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); move(1, 0); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); move(0, -1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); move(0, 1); }
+      else if (e.key === "Enter" || e.key === " ") {
+        if (!cursor) return;
+        e.preventDefault();
+        handleClickRef.current?.(cursor[0], cursor[1]);
+      }
     };
     const onWheel = (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -1271,6 +1511,7 @@ export default function MegaTicTacToe() {
   const [onlineSlot, setOnlineSlot] = useState(-1);
   const [onlinePlayers, setOnlinePlayers] = useState([]);
   const [connState, setConnState] = useState("connected"); // connected | reconnecting
+  const [emoteFeed, setEmoteFeed] = useState([]); // [{id, slot, name, emote, at}]
   const onlineConnRef = useRef(null);
 
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
@@ -1284,7 +1525,158 @@ export default function MegaTicTacToe() {
       if (prev[0] && prev[0][0] === pr && prev[0][1] === pc) return prev;
       return [[pr, pc], ...prev].slice(0, 3);
     });
+    sfx.place();
+    haptic.place();
   }, [lastMove]);
+
+  // Score / win sound + haptic cues
+  const prevScoresRef = useRef({});
+  useEffect(() => {
+    const prev = prevScoresRef.current;
+    let scored = false;
+    for (const k of Object.keys(scores || {})) {
+      if ((scores[k] || 0) > (prev[k] || 0)) { scored = true; break; }
+    }
+    if (scored) { sfx.score(); haptic.score(); }
+    prevScoresRef.current = { ...scores };
+  }, [scores]);
+
+  useEffect(() => {
+    if (winner !== null || isDraw) { sfx.win(); haptic.win(); }
+  }, [winner, isDraw]);
+
+  // Saved game: snapshot local (non-AI, non-online) game state so it can be resumed.
+  useEffect(() => {
+    if (screen !== "game") return;
+    if (!config || config.ai) return; // skip AI games (opponent move is state-dependent)
+    if (winner !== null || isDraw) return;
+    try {
+      const snap = {
+        config, board, cp, turn, globalTurn, scores, cooldowns, playerTurns,
+        blocks, lastMove, lastMoves, pwr: { ...pwr, active: false, firstDone: false, tpSource: null },
+        savedAt: Date.now(),
+      };
+      localStorage.setItem("mtt-saved-game", JSON.stringify(snap));
+    } catch {}
+  }, [screen, config, board, cp, turn, globalTurn, scores, cooldowns, playerTurns, blocks, lastMove, lastMoves, pwr, winner, isDraw]);
+
+  // Clear saved game on win/draw
+  useEffect(() => {
+    if (winner !== null || isDraw) {
+      try { localStorage.removeItem("mtt-saved-game"); } catch {}
+    }
+  }, [winner, isDraw]);
+
+  // Render the current board + banner into a canvas, then try to share or download.
+  const shareSnapshot = useCallback(async () => {
+    if (!board || !board.length || !config) return;
+    const n = board.length;
+    const cell = 28;
+    const pad = 20;
+    const headerH = 60;
+    const w = n * cell + pad * 2;
+    const h = n * cell + pad * 2 + headerH;
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    // bg
+    ctx.fillStyle = dark ? "#1e1e20" : "#F7F6F3";
+    ctx.fillRect(0, 0, w, h);
+    // header
+    ctx.fillStyle = dark ? "#ffffff" : "#222";
+    ctx.font = "bold 20px -apple-system, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    const title = isDraw ? "It's a draw!" : (winner !== null ? `${PLAYERS[winner].name} wins!` : "Mega Tic Tac Toe");
+    ctx.fillText(title, w / 2, 28);
+    ctx.font = "12px -apple-system, system-ui, sans-serif";
+    ctx.fillStyle = dark ? "#999" : "#666";
+    const scoreStr = Object.keys(scores).sort().map(k => `${PLAYERS[k].name}: ${scores[k]}`).join("   ");
+    ctx.fillText(scoreStr || `${n}×${n} • ${config.lineLen} in a row`, w / 2, 48);
+    // board bg
+    ctx.fillStyle = dark ? "#2a2a2d" : "#ffffff";
+    ctx.fillRect(pad - 4, headerH + pad - 4, n * cell + 8, n * cell + 8);
+    // grid lines
+    ctx.strokeStyle = dark ? "#3a3a3e" : "#e3e3e1";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= n; i++) {
+      ctx.beginPath();
+      ctx.moveTo(pad + i * cell, headerH + pad);
+      ctx.lineTo(pad + i * cell, headerH + pad + n * cell);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(pad, headerH + pad + i * cell);
+      ctx.lineTo(pad + n * cell, headerH + pad + i * cell);
+      ctx.stroke();
+    }
+    // tiles
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+      const t = board[r][c];
+      if (!t || t.visible === false) continue;
+      const color = PLAYERS[t.owner];
+      const x = pad + c * cell + cell / 2;
+      const y = headerH + pad + r * cell + cell / 2;
+      ctx.fillStyle = color.fill;
+      ctx.beginPath();
+      ctx.arc(x, y, cell * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      if (t.scored) {
+        ctx.strokeStyle = color.fill;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+    // footer
+    ctx.fillStyle = dark ? "#666" : "#aaa";
+    ctx.font = "10px -apple-system, system-ui, sans-serif";
+    ctx.fillText("Mega Tic Tac Toe", w / 2, h - 6);
+
+    const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
+    if (!blob) return;
+    const file = new File([blob], "mega-ttt-board.png", { type: "image/png" });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Mega TTT board" });
+        return;
+      }
+    } catch {}
+    try {
+      if (navigator.clipboard && window.ClipboardItem) {
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        toast("Board image copied to clipboard");
+        return;
+      }
+    } catch {}
+    // Fallback: download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "mega-ttt-board.png"; a.click();
+    URL.revokeObjectURL(url);
+  }, [board, config, scores, winner, isDraw, dark, toast]);
+
+  const resumeGame = useCallback(() => {
+    try {
+      const snap = JSON.parse(localStorage.getItem("mtt-saved-game") || "null");
+      if (!snap || !snap.config || !snap.board) return;
+      setConfig(snap.config);
+      setBoard(snap.board);
+      setCp(snap.cp || 0);
+      setTurn(snap.turn || 1);
+      setGlobalTurn(snap.globalTurn || 1);
+      setScores(snap.scores || {});
+      setCooldowns(snap.cooldowns || {});
+      setPlayerTurns(snap.playerTurns || {});
+      setLastMove(snap.lastMove || null);
+      setLastMoves(snap.lastMoves || []);
+      setBlocks(snap.blocks || []);
+      setPwr({ active: false, used: false, firstDone: false, tpSource: null });
+      setWinner(null); setIsDraw(false); setWinCells([]);
+      setMsg(null); setHistory([]); setReplayIdx(null);
+      setTimeLeft(snap.config.timer || 0);
+      const vw = Math.min(window.innerWidth - 32, 600);
+      setZoom(Math.min(52, Math.max(22, Math.floor(vw / snap.config.gridSize))));
+      setScreen("game");
+    } catch {}
+  }, []);
 
   const startGame = useCallback((cfg) => {
     setConfig(cfg);
@@ -1294,7 +1686,7 @@ export default function MegaTicTacToe() {
     setWinCells([]); setWinner(null); setIsDraw(false);
     setPwr({ active: false, used: false, firstDone: false, tpSource: null });
     setBlocks([]); setLastMoves([]);
-    setMsg(null); setHistory([]);
+    setMsg(null); setHistory([]); setReplayIdx(null);
     setTimeLeft(cfg.timer || 0);
     const vw = Math.min(window.innerWidth - 32, 600);
     setZoom(Math.min(52, Math.max(22, Math.floor(vw / cfg.gridSize))));
@@ -1368,6 +1760,16 @@ export default function MegaTicTacToe() {
         toast(msg.message);
         return;
       }
+      if (msg.type === "host-migrated") {
+        toast(`${msg.newHostName} is now the host`);
+        return;
+      }
+      if (msg.type === "emote") {
+        const id = Math.random().toString(36).slice(2);
+        setEmoteFeed(prev => [...prev, { id, slot: msg.slot, name: msg.name, emote: msg.emote, at: msg.at || Date.now() }]);
+        setTimeout(() => setEmoteFeed(prev => prev.filter(e => e.id !== id)), 3500);
+        return;
+      }
       // Full state updates
       if (msg.board || msg.phase) {
         applyOnlineState(msg);
@@ -1422,7 +1824,7 @@ export default function MegaTicTacToe() {
   }, [screen, winner, isDraw, config, onlineSlot, globalTurn]);
 
   const endTurn = useCallback((newBoard, newCd) => {
-    const s = scoreAndMark(newBoard, config.playerCount, config.lineLen, scores);
+    const s = scoreAndMark(newBoard, config.playerCount, config.lineLen, scores, config.teams ? [[0,2],[1,3]] : null);
     for (let p = 0; p < config.playerCount; p++) {
       if ((s[p] || 0) >= config.linesNeeded) {
         const allScored = [];
@@ -1443,7 +1845,7 @@ export default function MegaTicTacToe() {
     const nextRound = next === 0 ? turn + 1 : turn;
     const cd = { ...newCd }; if (cd[next] > 0) cd[next]--;
     const revealed = revealGhosts(newBoard, nextRound);
-    const s2 = scoreAndMark(revealed, config.playerCount, config.lineLen, s);
+    const s2 = scoreAndMark(revealed, config.playerCount, config.lineLen, s, config.teams ? [[0,2],[1,3]] : null);
     for (let p = 0; p < config.playerCount; p++) {
       if ((s2[p] || 0) >= config.linesNeeded) {
         const allScored = [];
@@ -1556,8 +1958,19 @@ export default function MegaTicTacToe() {
       // Use power ~70% of the time when available
       const willUse = canUse && Math.random() < 0.7;
 
-      // Pick and place normal tile (step 1)
-      const move = aiPickMove(board, 1, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
+      // Pick and place normal tile (step 1) — difficulty-aware wrapper
+      const diff = config.aiDifficulty || "medium";
+      let move;
+      if (diff === "easy" && Math.random() < 0.55) {
+        // Easy: often pick a random empty non-blocked cell
+        const empties = [];
+        for (let r = 0; r < board.length; r++) for (let c = 0; c < board.length; c++) {
+          if (!board[r][c] && !isBlocked(blocksRef.current, r, c, globalTurn)) empties.push([r, c]);
+        }
+        move = empties.length ? empties[Math.floor(Math.random() * empties.length)] : null;
+      } else {
+        move = aiPickMove(board, 1, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
+      }
       if (!move) return;
       const [r, c] = move;
       const b = cloneBoard(board);
@@ -1572,7 +1985,7 @@ export default function MegaTicTacToe() {
       // Double Place: 2nd tile every 3rd turn (same rule as for humans)
       const isDouble = isPow && power?.id === "doublePlace" && ((playerTurnsRef.current[1] || 0) + 1) % 3 === 0;
       if (isDouble && !curPwr.firstDone) {
-        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current);
+        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current, config.teams ? [[0,2],[1,3]] : null);
         setBoard(b); setScores(s);
         for (let p = 0; p < config.playerCount; p++) {
           if ((s[p] || 0) >= config.linesNeeded) {
@@ -1589,7 +2002,7 @@ export default function MegaTicTacToe() {
 
       // Takeover/Block/Ghost: place normal tile, queue step 2
       if (willUse) {
-        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current);
+        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current, config.teams ? [[0,2],[1,3]] : null);
         setBoard(b); setScores(s);
         for (let p = 0; p < config.playerCount; p++) {
           if ((s[p] || 0) >= config.linesNeeded) {
@@ -1697,7 +2110,7 @@ export default function MegaTicTacToe() {
 
     // Double Place: 2nd tile every 3rd turn (turns 3, 6, 9, ... for this player)
     if (isPow && power?.id === "doublePlace" && ((playerTurns[cp] || 0) + 1) % 3 === 0 && !pwr.firstDone) {
-      const s = scoreAndMark(b, config.playerCount, config.lineLen, scores);
+      const s = scoreAndMark(b, config.playerCount, config.lineLen, scores, config.teams ? [[0,2],[1,3]] : null);
       setBoard(b); setScores(s);
       for (let p = 0; p < config.playerCount; p++) {
         if ((s[p] || 0) >= config.linesNeeded) {
@@ -1714,7 +2127,7 @@ export default function MegaTicTacToe() {
 
     // Takeover/Block/Teleport: normal tile placed, now prompt for special action
     if (pwr.active && !pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "teleport")) {
-      const s = scoreAndMark(b, config.playerCount, config.lineLen, scores);
+      const s = scoreAndMark(b, config.playerCount, config.lineLen, scores, config.teams ? [[0,2],[1,3]] : null);
       setBoard(b); setScores(s);
       for (let p = 0; p < config.playerCount; p++) {
         if ((s[p] || 0) >= config.linesNeeded) {
@@ -1739,6 +2152,8 @@ export default function MegaTicTacToe() {
     endTurn(b, { ...cooldowns });
   }, [screen, board, blocks, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
 
+  useEffect(() => { handleClickRef.current = handleClick; }, [handleClick]);
+
   const togglePower = useCallback(() => {
     if (screen === "online-game") {
       if (onlineConnRef.current) onlineConnRef.current.powerToggle();
@@ -1753,9 +2168,9 @@ export default function MegaTicTacToe() {
   }, [screen, pwr, config, cp, toast]);
 
   const themedCss = `:root { ${themeVars(theme)} }\n${css}`;
-  if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} onOnline={() => setScreen("online-lobby")} onStats={() => setScreen("stats")} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
+  if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} onOnline={() => setScreen("online-lobby")} onStats={() => setScreen("stats")} onResume={resumeGame} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
   if (screen === "stats") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><StatsScreen onBack={() => setScreen("setup")} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
-  if (screen === "online-lobby") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><OnlineLobby onBack={() => { if (onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} onGameStart={handleOnlineGameStart} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
+  if (screen === "online-lobby") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><OnlineLobby onBack={() => { if (onlineConn) { onlineConn.close(); setOnlineConn(null); } try { const u = new URL(window.location.href); u.searchParams.delete("room"); window.history.replaceState({}, "", u.toString()); } catch {} setScreen("setup"); }} onGameStart={handleOnlineGameStart} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
 
   const isOnline = screen === "online-game" || screen === "online-review";
   const isReview = screen === "review" || screen === "online-review";
@@ -1852,12 +2267,39 @@ export default function MegaTicTacToe() {
           </div>
         </div>
 
+        {/* Emote feed (floating, top-right) */}
+        {isOnline && emoteFeed.length > 0 && (
+          <div style={{ position: "fixed", top: 70, right: 12, zIndex: 50, display: "flex", flexDirection: "column", gap: 6, pointerEvents: "none" }}>
+            {emoteFeed.map(e => (
+              <div key={e.id} style={{
+                background: "var(--card)", borderRadius: 16, padding: "6px 12px",
+                fontSize: 14, color: "var(--text)", boxShadow: "0 2px 10px rgba(0,0,0,0.12)",
+                display: "flex", alignItems: "center", gap: 8,
+                animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)",
+                borderLeft: `3px solid ${PLAYERS[e.slot]?.fill || "#888"}`,
+              }}>
+                <strong style={{ fontSize: 12, color: PLAYERS[e.slot]?.fill || "#888" }}>{e.name}</strong>
+                <span>{e.emote}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Emote bar */}
+        {isOnline && !isReview && onlineSlot >= 0 && (
+          <div style={{ display: "flex", gap: 6, padding: "6px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", justifyContent: "center" }}>
+            {["GG", "😂", "🤔", "👀", "🔥", "😭"].map(e => (
+              <button key={e} className="btn-hover" onClick={() => onlineConnRef.current?.emote(e)} style={{
+                padding: "4px 10px", borderRadius: 8, border: "1px solid var(--border)",
+                background: "var(--surface)", fontSize: 14, cursor: "pointer", fontFamily: "inherit",
+              }}>{e}</button>
+            ))}
+          </div>
+        )}
+
         {/* Reconnect banner */}
         {isOnline && connState === "reconnecting" && (
-          <div style={{ background: "#F59E0B", color: "#fff", padding: "6px 16px", fontSize: 13, fontWeight: 600, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff", animation: "pulse 1s ease-in-out infinite" }} />
-            Reconnecting...
-          </div>
+          <ReconnectBanner />
         )}
 
         {/* Timer bar */}
@@ -1895,15 +2337,44 @@ export default function MegaTicTacToe() {
           }}>{msg}</div>
         )}
 
-        {/* Board */}
-        <Board board={board} onCellClick={handleClick} lastMove={lastMove} lastMoves={lastMoves} winCells={winCells}
-          currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={isOnline ? onlineSlot : cp}
-          blocks={blocks} globalTurn={globalTurn} tpSource={pwr.tpSource || null} />
+        {/* Board (with replay override on review) */}
+        {(() => {
+          const replaying = isReview && replayIdx !== null && history[replayIdx];
+          const dBoard = replaying ? history[replayIdx].board : board;
+          const dLast = replaying ? history[replayIdx].lastMove : lastMove;
+          const dWin = replaying ? [] : winCells;
+          return (
+            <Board board={dBoard} onCellClick={handleClick} lastMove={dLast} lastMoves={replaying ? (dLast ? [dLast] : []) : lastMoves} winCells={dWin}
+              currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={isOnline ? onlineSlot : cp}
+              blocks={replaying ? [] : blocks} globalTurn={globalTurn} tpSource={pwr.tpSource || null} cursor={cursor} />
+          );
+        })()}
+
+        {/* Replay scrubber (review only, needs history) */}
+        {isReview && history.length > 0 && (
+          <div style={{ padding: "8px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 11, color: "var(--textMuted)", minWidth: 44 }}>
+              {replayIdx === null ? `Final` : `Move ${replayIdx + 1}/${history.length}`}
+            </span>
+            <input type="range" min={0} max={history.length} step={1}
+              value={replayIdx === null ? history.length : replayIdx}
+              onChange={e => {
+                const v = +e.target.value;
+                setReplayIdx(v === history.length ? null : v);
+              }}
+              style={{ flex: 1, cursor: "pointer" }} />
+            <button className="btn-hover" onClick={() => setReplayIdx(null)} style={{
+              padding: "4px 10px", borderRadius: 8, border: "1px solid var(--border)",
+              background: "var(--surface)", fontSize: 11, cursor: "pointer", fontFamily: "inherit", color: "var(--textMuted)",
+            }}>Live</button>
+          </div>
+        )}
 
         {/* Bottom bar */}
         {isReview ? (
           <div style={{ display: "flex", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1)" }}>
             <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }}>{isOnline ? "Leave" : "Setup"}</button>
+            <button className="btn-hover" onClick={shareSnapshot} style={{ padding: "12px 14px", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }} title="Share board image">Share</button>
             <button className="btn-hover" onClick={() => isOnline && onlineConnRef.current ? onlineConnRef.current.rematch() : startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--btnPrimary)", color: "var(--btnPrimaryText)", fontFamily: "inherit" }}>{isOnline ? "Rematch" : "Play Again"}</button>
           </div>
         ) : isPow && (

@@ -51,6 +51,24 @@ export default class MegaTTTServer {
       this.stopTimer();
       this.broadcast({ type: "opponent-disconnected" });
     }
+    this.publishListing();
+    // Host migration: if host (slot 0) disconnects during lobby, promote
+    // the lowest-slotted still-connected player to slot 0 so the room can proceed.
+    if (this.phase === "lobby" && player.slot === 0) {
+      const live = this.players.filter(p => !p.disconnected).sort((a, b) => a.slot - b.slot);
+      if (live.length > 0) {
+        const newHost = live[0];
+        // Drop the disconnected host entirely (no reclaim) — lobby only
+        this.players = this.players.filter(p => p.id !== player.id);
+        newHost.slot = 0;
+        this.broadcast({ type: "host-migrated", newHostName: newHost.name, newHostSlot: 0 });
+        // Push fresh state so each client updates its `you` slot
+        for (const p of this.players) {
+          const c = [...this.room.getConnections()].find(x => x.id === p.id);
+          if (c) c.send(JSON.stringify({ type: "room-state", ...this.getState(), you: p.slot }));
+        }
+      }
+    }
   }
 
   onMessage(msg, conn) {
@@ -65,8 +83,16 @@ export default class MegaTTTServer {
       case "move": return this.handleMove(conn, data);
       case "power-toggle": return this.handlePowerToggle(conn);
       case "rematch": return this.handleRematch(conn);
+      case "emote": return this.handleEmote(conn, data);
       default: break;
     }
+  }
+
+  handleEmote(conn, data) {
+    const player = this.players.find(p => p.id === conn.id);
+    if (!player) return;
+    if (!data.emote || typeof data.emote !== "string" || data.emote.length > 16) return;
+    this.broadcast({ type: "emote", slot: player.slot, name: player.name, emote: data.emote, at: Date.now() });
   }
 
   handleJoin(conn, data) {
@@ -80,9 +106,13 @@ export default class MegaTTTServer {
     }
     // Cap = host's chosen playerCount (defaults to 4 before config is set)
     const cap = this.config?.playerCount || 4;
-    const activeCount = this.players.filter(p => !p.disconnected).length;
+    const activeCount = this.players.filter(p => !p.disconnected && !p.spectator).length;
     if (activeCount >= cap) {
-      conn.send(JSON.stringify({ type: "error", message: "Room is full" }));
+      // Join as spectator — receives state but cannot play
+      const name = (data.name || "Spectator").slice(0, 20);
+      this.players.push({ id: conn.id, name, slot: -1, disconnected: false, spectator: true });
+      conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: -1, spectator: true }));
+      this.broadcast({ type: "spectator-joined", name });
       return;
     }
     // Take the lowest free slot (handles freed/reordered slots)
@@ -96,6 +126,7 @@ export default class MegaTTTServer {
 
     conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: slot }));
     this.broadcast({ type: "player-joined", slot, name, playerCount: this.activePlayerCount() });
+    this.publishListing();
   }
 
   handleRename(conn, data) {
@@ -116,6 +147,31 @@ export default class MegaTTTServer {
     if (this.phase !== "lobby") return;
     this.config = data.config;
     this.broadcast({ type: "config-updated", config: this.config });
+    this.publishListing();
+  }
+
+  async publishListing() {
+    const parties = this.room.context?.parties || this.room.parties;
+    if (!parties?.lobby) return;
+    const stub = parties.lobby.get("public");
+    const host = this.players.find(p => p.slot === 0);
+    const payload = {
+      action: (this.config?.public && this.phase === "lobby") ? "set" : "remove",
+      code: this.room.id,
+      hostName: host?.name || "Host",
+      players: this.activePlayerCount(),
+      playerCount: this.config?.playerCount || 2,
+      gridSize: this.config?.gridSize || 12,
+      mode: this.config?.mode || "normal",
+      teams: !!this.config?.teams,
+    };
+    try {
+      await stub.fetch({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {}
   }
 
   handleStart(conn) {
@@ -132,6 +188,7 @@ export default class MegaTTTServer {
 
     // Initialize game
     this.phase = "playing";
+    this.publishListing(); // remove from public list — no longer joinable as lobby
     this.board = makeBoard(this.config.gridSize);
     this.cp = 0;
     this.turn = 1;
@@ -231,7 +288,7 @@ export default class MegaTTTServer {
 
     // Double Place: every 3rd turn — first tile
     if (isPow && power?.id === "doublePlace" && ((this.playerTurns[this.cp] || 0) + 1) % 3 === 0 && !this.pwr.firstDone) {
-      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores);
+      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.config.teams ? [[0,2],[1,3]] : null);
       this.scores = s;
       if (this.checkWin(s)) return;
       this.pwr = { active: false, used: false, firstDone: true, tpSource: null };
@@ -241,7 +298,7 @@ export default class MegaTTTServer {
 
     // Takeover/Block/Teleport: normal tile placed, now wait for power action
     if (this.pwr.active && !this.pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "teleport")) {
-      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores);
+      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.config.teams ? [[0,2],[1,3]] : null);
       this.scores = s;
       if (this.checkWin(s)) return;
       this.pwr = { ...this.pwr, firstDone: true };
@@ -293,7 +350,7 @@ export default class MegaTTTServer {
   }
 
   endTurn() {
-    const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores);
+    const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.config.teams ? [[0,2],[1,3]] : null);
     this.scores = s;
     if (this.checkWin(s)) return;
     if (isBoardFull(this.board)) {
@@ -311,7 +368,7 @@ export default class MegaTTTServer {
     if (this.cooldowns[next] > 0) this.cooldowns[next]--;
 
     this.board = revealGhosts(this.board, nextRound);
-    const s2 = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, s);
+    const s2 = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, s, this.config.teams ? [[0,2],[1,3]] : null);
     this.scores = s2;
     if (this.checkWin(s2)) return;
 

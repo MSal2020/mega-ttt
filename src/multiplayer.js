@@ -48,6 +48,21 @@ export function createConnection(roomCode, onMessage) {
     move(r, c) { return send({ type: "move", r, c }); },
     powerToggle() { return send({ type: "power-toggle" }); },
     rematch() { return send({ type: "rematch" }); },
+    emote(emote) { return send({ type: "emote", emote }); },
     close() { ws.close(); },
   };
 }
+
+// Subscribe to the public-rooms list from the lobby party.
+// onRooms(list) is called on every update.
+export function subscribeToLobby(onRooms) {
+  const ws = new PartySocket({ host: PARTYKIT_HOST, party: "lobby", room: "public" });
+  ws.addEventListener("message", (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === "rooms") onRooms(data.rooms || []);
+    } catch {}
+  });
+  return { ws, close() { ws.close(); } };
+}
+

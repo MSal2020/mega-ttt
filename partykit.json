@@ -1,5 +1,8 @@
 {
   "name": "mega-ttt",
   "main": "party/index.js",
+  "parties": {
+    "lobby": "party/lobby.js"
+  },
   "compatibilityDate": "2026-04-13"
 }
