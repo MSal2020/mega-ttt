@@ -245,7 +245,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const [customLinesNeeded, setCustomLinesNeeded] = useState(null);
   const [timerEnabled, setTimerEnabled] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(15);
-  const playerCount = 2; // server currently supports 2 players online
+  const [playerCount, setPlayerCount] = useState(2);
   const autoWc = getWinConditions(gridSize, playerCount);
   const wc = {
     lineLen: customLineLen ?? autoWc.lineLen,
@@ -349,7 +349,20 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   // Explicit "Back" button handles closing.
 
   const isHost = you === 0;
-  const opponentJoined = players.length >= 2;
+  const opponentJoined = players.length >= playerCount;
+
+  // Push config to server when host changes settings (so the join cap matches)
+  useEffect(() => {
+    if (!conn || !isHost) return;
+    const config = {
+      mode, gridSize, playerCount,
+      powers: powers.slice(0, playerCount),
+      ...wc,
+      timer: timerEnabled ? timerSeconds : 0,
+      ai: false,
+    };
+    conn.setConfig(config);
+  }, [conn, isHost, mode, gridSize, playerCount, powers, wc.lineLen, wc.linesNeeded, timerEnabled, timerSeconds]);
 
   return (
     <div style={{ minHeight: "100dvh", background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none", transition: "background 0.3s" }}>
@@ -459,7 +472,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
             {/* Players */}
             <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Players</div>
-              {[0, 1].map(slot => {
+              {Array.from({ length: playerCount }, (_, slot) => slot).map(slot => {
                 const p = players.find(p => p.slot === slot);
                 return (
                   <div key={slot} style={{
@@ -507,6 +520,37 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                     <span style={{ fontSize: 18, fontWeight: 700, color: "#4A7BF7" }}>{gridSize}×{gridSize}</span>
                   </div>
                   <input type="range" min={7} max={20} value={gridSize} onChange={e => setGridSize(+e.target.value)} style={{ width: "100%", marginTop: 6, cursor: "pointer" }} />
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: t.textLabel, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 8 }}>Players</div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    {[2, 3, 4].map(n => {
+                      // Can't shrink below currently-joined count
+                      const disabled = n < players.length;
+                      return (
+                        <button key={n} disabled={disabled} onClick={() => setPlayerCount(n)} style={{
+                          width: 44, height: 44, borderRadius: 10, fontSize: 16, fontWeight: 600,
+                          cursor: disabled ? "default" : "pointer", fontFamily: "inherit",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          transition: "all 0.15s", opacity: disabled ? 0.35 : 1,
+                          border: playerCount === n ? "2px solid #4A7BF7" : `1.5px solid ${t.border}`,
+                          background: playerCount === n ? "#E8EFFE" : t.card,
+                          color: playerCount === n ? "#4A7BF7" : t.textMuted,
+                        }}>{n}</button>
+                      );
+                    })}
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                      {[0, 1, 2, 3].map(i => (
+                        <div key={i} style={{
+                          width: 12, height: 12, borderRadius: "50%", background: PLAYERS[i].fill,
+                          transition: "transform 0.25s cubic-bezier(0.34,1.56,0.64,1), opacity 0.2s",
+                          transform: i < playerCount ? "scale(1)" : "scale(0)",
+                          opacity: i < playerCount ? 1 : 0,
+                        }} />
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
                 <Collapse open={mode === "powers"} maxH={260}>
