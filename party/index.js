@@ -1,6 +1,7 @@
 import {
   makeBoard, cloneBoard, scoreAndMark, revealGhosts,
   isBoardFull, getScoredCells, POWERS,
+  getBlockSize, getPowerCd, isBlocked, pruneBlocks,
 } from "../lib/gameLogic.js";
 
 /**
@@ -29,7 +30,8 @@ export default class MegaTTTServer {
     this.winner = null;
     this.isDraw = false;
     this.winCells = [];
-    this.pwr = { active: false, used: false, firstDone: false };
+    this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
+    this.blocks = [];
     this.timerInterval = null;
     this.timeLeft = 0;
   }
@@ -137,7 +139,8 @@ export default class MegaTTTServer {
     this.winner = null;
     this.isDraw = false;
     this.winCells = [];
-    this.pwr = { active: false, used: false, firstDone: false };
+    this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
+    this.blocks = [];
     this.timeLeft = this.config.timer || 0;
 
     this.broadcastState("game-started");
@@ -165,21 +168,50 @@ export default class MegaTTTServer {
         }
         this.board[r][c] = { owner: this.cp, visible: true, anim: "steal" };
         this.lastMove = [r, c];
-        this.cooldowns[this.cp] = POWERS[this.config.powers[this.cp]].cd;
+        this.cooldowns[this.cp] = getPowerCd("takeover", this.config.gridSize);
         this.endTurn();
         return;
       }
       if (power?.id === "block") {
-        if (cell) { conn.send(JSON.stringify({ type: "error", message: "Pick an empty cell" })); return; }
-        this.board[r][c] = { wall: true, anim: "wall" };
+        const size = getBlockSize(this.config.lineLen);
+        if (r + size > this.config.gridSize || c + size > this.config.gridSize) {
+          conn.send(JSON.stringify({ type: "error", message: `Block must fit on the board (${size}x${size})` })); return;
+        }
+        for (let dr = 0; dr < size; dr++) for (let dc = 0; dc < size; dc++) {
+          if (isBlocked(this.blocks, r + dr, c + dc, this.globalTurn)) {
+            conn.send(JSON.stringify({ type: "error", message: "Overlaps an existing block" })); return;
+          }
+        }
+        const expiresAt = this.globalTurn + 3 * this.config.playerCount;
+        this.blocks.push({ r, c, size, expiresAt, owner: this.cp, createdAt: this.globalTurn });
         this.cooldowns[this.cp] = POWERS[this.config.powers[this.cp]].cd;
         this.endTurn();
         return;
       }
-      if (power?.id === "ghost") {
-        if (cell) { conn.send(JSON.stringify({ type: "error", message: "Pick an empty cell" })); return; }
-        this.board[r][c] = { owner: this.cp, visible: false, placedTurn: this.turn, anim: "ghost" };
+      if (power?.id === "teleport") {
+        // Two-click: first click selects source, second chooses destination.
+        if (!this.pwr.tpSource) {
+          if (!cell || cell.owner !== this.cp || cell.wall || cell.scored || cell.visible === false) {
+            conn.send(JSON.stringify({ type: "error", message: "Pick one of your tiles" })); return;
+          }
+          if (isBlocked(this.blocks, r, c, this.globalTurn)) {
+            conn.send(JSON.stringify({ type: "error", message: "That tile is inside a blocked area" })); return;
+          }
+          this.pwr = { ...this.pwr, tpSource: [r, c] };
+          this.broadcastState("power-toggled");
+          return;
+        }
+        if (cell) { conn.send(JSON.stringify({ type: "error", message: "Destination must be empty" })); return; }
+        if (isBlocked(this.blocks, r, c, this.globalTurn)) {
+          conn.send(JSON.stringify({ type: "error", message: "Can't teleport into a blocked area" })); return;
+        }
+        const [sr, sc] = this.pwr.tpSource;
+        if (sr === r && sc === c) { conn.send(JSON.stringify({ type: "error", message: "Pick a different cell" })); return; }
+        const moved = { ...this.board[sr][sc], anim: "reveal" };
+        this.board[sr][sc] = null;
+        this.board[r][c] = moved;
         this.lastMove = [r, c];
+        this.cooldowns[this.cp] = POWERS[this.config.powers[this.cp]].cd;
         this.endTurn();
         return;
       }
@@ -187,21 +219,24 @@ export default class MegaTTTServer {
 
     // Step 1: place normal tile
     if (cell) return;
+    if (isBlocked(this.blocks, r, c, this.globalTurn)) {
+      conn.send(JSON.stringify({ type: "error", message: "That area is currently blocked" })); return;
+    }
     this.board[r][c] = { owner: this.cp, visible: true };
     this.lastMove = [r, c];
 
-    // Double Place: first tile
-    if (isPow && power?.id === "doublePlace" && (this.playerTurns[this.cp] || 0) % 2 === 1 && !this.pwr.firstDone) {
+    // Double Place: every 3rd turn — first tile
+    if (isPow && power?.id === "doublePlace" && ((this.playerTurns[this.cp] || 0) + 1) % 3 === 0 && !this.pwr.firstDone) {
       const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores);
       this.scores = s;
       if (this.checkWin(s)) return;
-      this.pwr = { active: false, used: false, firstDone: true };
+      this.pwr = { active: false, used: false, firstDone: true, tpSource: null };
       this.broadcastState("move-applied");
       return;
     }
 
-    // Takeover/Block/Ghost: normal tile placed, now wait for power action
-    if (this.pwr.active && !this.pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "ghost")) {
+    // Takeover/Block/Teleport: normal tile placed, now wait for power action
+    if (this.pwr.active && !this.pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "teleport")) {
       const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores);
       this.scores = s;
       if (this.checkWin(s)) return;
@@ -220,9 +255,9 @@ export default class MegaTTTServer {
     if (slot !== this.cp) return;
 
     if (this.pwr.active && !this.pwr.firstDone) {
-      this.pwr = { active: false, used: false, firstDone: false };
+      this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
     } else if (!this.pwr.active) {
-      this.pwr = { active: true, used: true, firstDone: false };
+      this.pwr = { active: true, used: true, firstDone: false, tpSource: null };
     }
     this.broadcastState("power-toggled");
   }
@@ -246,7 +281,8 @@ export default class MegaTTTServer {
     this.winner = null;
     this.isDraw = false;
     this.winCells = [];
-    this.pwr = { active: false, used: false, firstDone: false };
+    this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
+    this.blocks = [];
     this.timeLeft = this.config.timer || 0;
     this.broadcastState("game-started");
     this.startTimer();
@@ -279,7 +315,8 @@ export default class MegaTTTServer {
     this.cp = next;
     this.globalTurn = nextGT;
     if (next === 0) this.turn++;
-    this.pwr = { active: false, used: false, firstDone: false };
+    this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
+    this.blocks = pruneBlocks(this.blocks, nextGT);
     this.timeLeft = this.config.timer || 0;
 
     this.broadcastState("move-applied");
@@ -310,11 +347,14 @@ export default class MegaTTTServer {
         // Random move on timeout
         const empty = [];
         for (let r = 0; r < this.board.length; r++)
-          for (let c = 0; c < this.board[0].length; c++)
-            if (!this.board[r][c]) empty.push([r, c]);
+          for (let c = 0; c < this.board[0].length; c++) {
+            if (this.board[r][c]) continue;
+            if (isBlocked(this.blocks, r, c, this.globalTurn)) continue;
+            empty.push([r, c]);
+          }
         if (empty.length > 0) {
           const [r, c] = empty[Math.floor(Math.random() * empty.length)];
-          this.pwr = { active: false, used: false, firstDone: false };
+          this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
           this.board[r][c] = { owner: this.cp, visible: true };
           this.lastMove = [r, c];
           this.endTurn();
@@ -353,6 +393,7 @@ export default class MegaTTTServer {
       isDraw: this.isDraw,
       winCells: this.winCells,
       pwr: this.pwr,
+      blocks: this.blocks,
       timeLeft: this.timeLeft,
       players: this.players.map(p => ({ slot: p.slot, name: p.name })),
     };

@@ -3,6 +3,7 @@ import {
   PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
   findLines, revealGhosts, scoreAndMark, aiPickMove, aiPickPowerAction,
   isBoardFull, getScoredCells, generateRoomCode,
+  getBlockSize, getPowerCd, isBlocked, pruneBlocks,
 } from "../lib/gameLogic.js";
 import { createConnection } from "./multiplayer.js";
 import { getStats, recordGame, clearStats, getTotalGames, getTotalWins, getWinRate } from "./stats.js";
@@ -889,7 +890,7 @@ function Setup({ onStart, onOnline, onStats, dark, setDark }) {
   );
 }
 
-function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner }) {
+function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner, blocks = [], globalTurn = 1, tpSource = null }) {
   const t = useTheme();
   const n = board.length;
   const cellSize = Math.max(28, zoom);
@@ -916,7 +917,14 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
         e.preventDefault();
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
-        pinchRef.current = { dist: Math.hypot(dx, dy), zoom };
+        // Midpoint in container-local coords (for re-centering)
+        const rect = el.getBoundingClientRect();
+        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+        // Board-space point under the midpoint, at current zoom
+        const boardX = el.scrollLeft + mx;
+        const boardY = el.scrollTop + my;
+        pinchRef.current = { dist: Math.hypot(dx, dy), zoom, mx, my, boardX, boardY };
       }
     };
     const onTouchMove = (e) => {
@@ -927,7 +935,16 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
         const dist = Math.hypot(dx, dy);
         const scale = dist / pinchRef.current.dist;
         const newZoom = Math.min(72, Math.max(20, pinchRef.current.zoom * scale));
+        const ratio = newZoom / pinchRef.current.zoom;
         onZoom(newZoom);
+        // Re-center so the board-space point under the midpoint stays put
+        const newScrollLeft = pinchRef.current.boardX * ratio - pinchRef.current.mx;
+        const newScrollTop = pinchRef.current.boardY * ratio - pinchRef.current.my;
+        // Defer to next frame so the new cellSize is applied before scroll
+        requestAnimationFrame(() => {
+          el.scrollLeft = newScrollLeft;
+          el.scrollTop = newScrollTop;
+        });
       }
     };
     const onTouchEnd = () => { pinchRef.current = null; };
@@ -1040,16 +1057,47 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
           const last = lastMove && lastMove[0] === r && lastMove[1] === c;
           const showGhost = isGhost && cell.owner === ghostOwner;
           const stealTarget = actionMode === "takeover" && cell && !cell.wall && cell.visible !== false && !cell.scored && cell.owner !== currentPlayer;
+          const cellBlocked = isBlocked(blocks, r, c, globalTurn);
+          // Teleport: if no source picked, own non-scored tiles clickable; otherwise empty cells clickable
+          const tpSrcPick = actionMode === "teleport" && !tpSource && cell && cell.owner === currentPlayer && !cell.wall && !cell.scored && cell.visible !== false && !cellBlocked;
+          const tpDstPick = actionMode === "teleport" && tpSource && !cell && !cellBlocked;
+          const isTpSource = tpSource && tpSource[0] === r && tpSource[1] === c;
+          const blockAnchorPick = actionMode === "block" && !cell;
 
-          const clickable = (!cell && !actionMode) || stealTarget || (actionMode === "block" && !cell) || (actionMode === "ghost" && !cell);
+          const clickable = (!cell && !actionMode && !cellBlocked) || stealTarget || blockAnchorPick || tpSrcPick || tpDstPick;
+
+          // Last-move trail: newest first, older = more faded
+          const trailIdx = lastMoves.findIndex(([mr, mc]) => mr === r && mc === c);
 
           return (
             <div key={`${r}-${c}`} className={clickable ? "cell" : undefined} onClick={() => onCellClick(r, c)} style={{
-              width: cellSize, height: cellSize, background: isWall ? "var(--cellWall)" : "var(--cell)",
+              width: cellSize, height: cellSize, background: cellBlocked ? "var(--cellWall)" : (isWall ? "var(--cellWall)" : "var(--cell)"),
               borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center",
               cursor: clickable ? "pointer" : "default",
               position: "relative", transition: "background 0.2s",
             }}>
+              {cellBlocked && (
+                <div style={{
+                  position: "absolute", inset: 0, borderRadius: 3,
+                  backgroundImage: `repeating-linear-gradient(45deg, ${t.textFaint}33 0 3px, transparent 3px 7px)`,
+                  pointerEvents: "none",
+                }} />
+              )}
+              {trailIdx > 0 && owned && (
+                <div style={{
+                  position: "absolute", inset: 2, borderRadius: "50%",
+                  boxShadow: `0 0 0 1.5px ${PLAYERS[cell.owner].fill}${trailIdx === 1 ? "55" : "22"}`,
+                  pointerEvents: "none",
+                }} />
+              )}
+              {isTpSource && (
+                <div style={{
+                  position: "absolute", inset: 1, borderRadius: 3,
+                  border: `2px dashed ${PLAYERS[currentPlayer].fill}`,
+                  animation: "slideUp 0.2s ease-out",
+                  pointerEvents: "none",
+                }} />
+              )}
               {clickable && !cell && (
                 <>
                   <div className="cell-hover" style={{
@@ -1127,7 +1175,9 @@ export default function MegaTicTacToe() {
   const [winCells, setWinCells] = useState([]);
   const [winner, setWinner] = useState(null);
   const [isDraw, setIsDraw] = useState(false);
-  const [pwr, setPwr] = useState({ active: false, used: false, firstDone: false });
+  const [pwr, setPwr] = useState({ active: false, used: false, firstDone: false, tpSource: null });
+  const [blocks, setBlocks] = useState([]); // active block areas: [{r,c,size,expiresAt,owner}]
+  const [lastMoves, setLastMoves] = useState([]); // trail of recent moves: [[r,c], ...] newest first
   const [zoom, setZoom] = useState(44);
   const zoomRef = useRef(44);
   const zoomTweenRef = useRef(null);
@@ -1181,13 +1231,25 @@ export default function MegaTicTacToe() {
 
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
 
+  // Track a rolling trail of the last 3 moves (newest first) for the move-trail visual
+  useEffect(() => {
+    if (!lastMove) return;
+    setLastMoves(prev => {
+      const [pr, pc] = lastMove;
+      // Skip if same as newest (avoids dup on re-renders)
+      if (prev[0] && prev[0][0] === pr && prev[0][1] === pc) return prev;
+      return [[pr, pc], ...prev].slice(0, 3);
+    });
+  }, [lastMove]);
+
   const startGame = useCallback((cfg) => {
     setConfig(cfg);
     setBoard(makeBoard(cfg.gridSize));
     setCp(0); setTurn(1); setGlobalTurn(1);
     setScores({}); setCooldowns({}); setPlayerTurns({}); setLastMove(null);
     setWinCells([]); setWinner(null); setIsDraw(false);
-    setPwr({ active: false, used: false, firstDone: false });
+    setPwr({ active: false, used: false, firstDone: false, tpSource: null });
+    setBlocks([]); setLastMoves([]);
     setMsg(null); setHistory([]);
     setTimeLeft(cfg.timer || 0);
     const vw = Math.min(window.innerWidth - 32, 600);
@@ -1209,7 +1271,8 @@ export default function MegaTicTacToe() {
     if (msg.winner !== undefined) setWinner(msg.winner);
     if (msg.isDraw !== undefined) setIsDraw(msg.isDraw);
     if (msg.winCells) setWinCells(msg.winCells);
-    if (msg.pwr) setPwr(msg.pwr);
+    if (msg.pwr) setPwr({ tpSource: null, ...msg.pwr });
+    if (msg.blocks) setBlocks(msg.blocks);
     if (msg.timeLeft !== undefined) setTimeLeft(msg.timeLeft);
     if (msg.you !== undefined) setOnlineSlot(msg.you);
     if (msg.players) setOnlinePlayers(msg.players);
@@ -1352,7 +1415,9 @@ export default function MegaTicTacToe() {
     setPlayerTurns(pt => ({ ...pt, [cp]: (pt[cp] || 0) + 1 }));
     setCp(next); setGlobalTurn(nextGT);
     if (next === 0) setTurn(t => t + 1);
-    setPwr({ active: false, used: false, firstDone: false });
+    setPwr({ active: false, used: false, firstDone: false, tpSource: null });
+    // Prune expired block areas based on the new globalTurn
+    setBlocks(bs => pruneBlocks(bs, nextGT));
     if (config.timer) setTimeLeft(config.timer);
   }, [config, cp, globalTurn, turn, scores]);
 
@@ -1363,12 +1428,14 @@ export default function MegaTicTacToe() {
   const pwrRef = useRef(pwr);
   const scoresRef = useRef(scores);
   const playerTurnsRef = useRef(playerTurns);
+  const blocksRef = useRef(blocks);
   boardRef.current = board;
   cooldownsRef.current = cooldowns;
   endTurnRef.current = endTurn;
   pwrRef.current = pwr;
   scoresRef.current = scores;
   playerTurnsRef.current = playerTurns;
+  blocksRef.current = blocks;
 
   useEffect(() => {
     if (!config?.timer || screen !== "game") return;
@@ -1379,7 +1446,11 @@ export default function MegaTicTacToe() {
           setTimeout(() => {
             const b = boardRef.current;
             const empty = [];
-            for (let r = 0; r < b.length; r++) for (let c = 0; c < b[0].length; c++) if (!b[r][c]) empty.push([r,c]);
+            for (let r = 0; r < b.length; r++) for (let c = 0; c < b[0].length; c++) {
+              if (b[r][c]) continue;
+              if (isBlocked(blocksRef.current, r, c, globalTurn)) continue;
+              empty.push([r,c]);
+            }
             if (empty.length > 0) {
               const [r, c] = empty[Math.floor(Math.random() * empty.length)];
               setPwr({ active: false, used: false, firstDone: false });
@@ -1410,35 +1481,39 @@ export default function MegaTicTacToe() {
 
       // Step 2: execute power action after first tile was placed
       if (isPow && curPwr.active && curPwr.firstDone && power && power.id !== "doublePlace") {
-        const move = aiPickPowerAction(board, 1, power.id, config.lineLen, config.playerCount);
+        const move = aiPickPowerAction(board, 1, power.id, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
         if (!move) return;
-        const [r, c] = move;
-        const b = cloneBoard(board);
         if (power.id === "takeover") {
+          const [r, c] = move;
+          const b = cloneBoard(board);
           b[r][c] = { owner: 1, visible: true, anim: "steal" };
           setBoard(b); setLastMove([r, c]);
-          endTurnRef.current(b, { ...cooldownsRef.current, 1: power.cd });
+          endTurnRef.current(b, { ...cooldownsRef.current, 1: getPowerCd("takeover", config.gridSize) });
         } else if (power.id === "block") {
-          b[r][c] = { wall: true, anim: "wall" };
-          setBoard(b);
+          const [r, c] = move;
+          const size = getBlockSize(config.lineLen);
+          const expiresAt = globalTurn + 3 * config.playerCount;
+          setBlocks(bs => [...bs, { r, c, size, expiresAt, owner: 1, createdAt: globalTurn }]);
+          endTurnRef.current(board, { ...cooldownsRef.current, 1: power.cd });
+        } else if (power.id === "teleport") {
+          const { from, to } = move;
+          const b = cloneBoard(board);
+          b[to[0]][to[1]] = { ...b[from[0]][from[1]], anim: "reveal" };
+          b[from[0]][from[1]] = null;
+          setBoard(b); setLastMove(to);
           endTurnRef.current(b, { ...cooldownsRef.current, 1: power.cd });
-        } else if (power.id === "ghost") {
-          b[r][c] = { owner: 1, visible: false, placedTurn: turn, anim: "ghost" };
-          setBoard(b); setLastMove([r, c]);
-          endTurnRef.current(b, { ...cooldownsRef.current });
         }
         return;
       }
 
       // Decide to use power this turn
       const cd = cooldownsRef.current[1] || 0;
-      const hasActiveGhost = isPow && power?.id === "ghost" && board.some(row => row.some(c => c && c.owner === 1 && c.visible === false));
-      const canUse = isPow && cd === 0 && !curPwr.used && power && power.id !== "doublePlace" && !hasActiveGhost;
+      const canUse = isPow && cd === 0 && !curPwr.used && power && power.id !== "doublePlace";
       // Use power ~70% of the time when available
       const willUse = canUse && Math.random() < 0.7;
 
       // Pick and place normal tile (step 1)
-      const move = aiPickMove(board, 1, config.lineLen, config.playerCount);
+      const move = aiPickMove(board, 1, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
       if (!move) return;
       const [r, c] = move;
       const b = cloneBoard(board);
@@ -1450,8 +1525,8 @@ export default function MegaTicTacToe() {
         playerTurns: { ...playerTurnsRef.current }, lastMove, undoPlayer: 1,
       }]);
 
-      // Double Place: first tile of a double turn
-      const isDouble = isPow && power?.id === "doublePlace" && (playerTurnsRef.current[1] || 0) % 2 === 1;
+      // Double Place: 2nd tile every 3rd turn (same rule as for humans)
+      const isDouble = isPow && power?.id === "doublePlace" && ((playerTurnsRef.current[1] || 0) + 1) % 3 === 0;
       if (isDouble && !curPwr.firstDone) {
         const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current);
         setBoard(b); setScores(s);
@@ -1528,33 +1603,56 @@ export default function MegaTicTacToe() {
       }]);
     }
 
-    // Step 2 of Takeover/Block/Ghost: special action after normal tile
+    // Step 2 of Takeover/Block/Teleport: special action after normal tile
     if (pwr.active && pwr.firstDone && power?.id === "takeover") {
       if (!cell || cell.wall || cell.owner === cp || cell.visible === false || cell.scored) { toast("Pick an opponent's tile"); return; }
       const b = board.map(row => row.map(x => x ? {...x} : null));
       b[r][c] = { owner: cp, visible: true, anim: "steal" }; setBoard(b); setLastMove([r,c]);
-      endTurn(b, { ...cooldowns, [cp]: POWERS[config.powers[cp]].cd }); return;
+      endTurn(b, { ...cooldowns, [cp]: getPowerCd("takeover", config.gridSize) }); return;
     }
     if (pwr.active && pwr.firstDone && power?.id === "block") {
-      if (cell) { toast("Pick an empty cell for wall"); return; }
-      const b = board.map(row => row.map(x => x ? {...x} : null));
-      b[r][c] = { wall: true, anim: "wall" }; setBoard(b);
-      endTurn(b, { ...cooldowns, [cp]: POWERS[config.powers[cp]].cd }); return;
+      const size = getBlockSize(config.lineLen);
+      if (r + size > config.gridSize || c + size > config.gridSize) { toast(`Block must fit on the board (${size}×${size})`); return; }
+      // Overlap with existing active block: disallow (keeps things readable)
+      for (let dr = 0; dr < size; dr++) for (let dc = 0; dc < size; dc++) {
+        if (isBlocked(blocks, r + dr, c + dc, globalTurn)) { toast("Overlaps an existing block"); return; }
+      }
+      // Duration: 3 of THIS player's turns → expire when next time this player would play again + 3
+      // Simpler: expire after 3 × playerCount global turns from now (≈ 3 of this player's cycles).
+      const expiresAt = globalTurn + 3 * config.playerCount;
+      setBlocks(bs => [...bs, { r, c, size, expiresAt, owner: cp, createdAt: globalTurn }]);
+      endTurn(board, { ...cooldowns, [cp]: POWERS[config.powers[cp]].cd }); return;
     }
-    if (pwr.active && pwr.firstDone && power?.id === "ghost") {
-      if (cell) { toast("Pick an empty cell for ghost"); return; }
+    if (pwr.active && pwr.firstDone && power?.id === "teleport") {
+      // Two-click UX: first click selects a source (own, non-scored, non-wall, not blocked), second selects destination.
+      if (!pwr.tpSource) {
+        if (!cell || cell.owner !== cp || cell.wall || cell.scored || cell.visible === false) { toast("Pick one of your tiles to move"); return; }
+        if (isBlocked(blocks, r, c, globalTurn)) { toast("That tile is inside a blocked area"); return; }
+        setPwr({ ...pwr, tpSource: [r, c] });
+        toast("Now pick where to move it");
+        return;
+      }
+      // Second click: destination
+      if (cell) { toast("Destination must be empty"); return; }
+      if (isBlocked(blocks, r, c, globalTurn)) { toast("Can't teleport into a blocked area"); return; }
+      const [sr, sc] = pwr.tpSource;
+      if (sr === r && sc === c) { toast("Pick a different cell"); return; }
       const b = board.map(row => row.map(x => x ? {...x} : null));
-      b[r][c] = { owner: cp, visible: false, placedTurn: turn, anim: "ghost" }; setBoard(b); setLastMove([r,c]);
-      endTurn(b, { ...cooldowns }); return;
+      const moved = { ...b[sr][sc], anim: "reveal" };
+      b[sr][sc] = null;
+      b[r][c] = moved;
+      setBoard(b); setLastMove([r, c]);
+      endTurn(b, { ...cooldowns, [cp]: POWERS[config.powers[cp]].cd }); return;
     }
 
     // Step 1 for all powers (and normal mode): place normal tile
     if (cell) return;
+    if (isBlocked(blocks, r, c, globalTurn)) { toast("That area is currently blocked"); return; }
     const b = board.map(row => row.map(x => x ? {...x} : null));
     b[r][c] = { owner: cp, visible: true }; setLastMove([r,c]);
 
-    // Double Place: first tile of a double turn
-    if (isPow && power?.id === "doublePlace" && (playerTurns[cp] || 0) % 2 === 1 && !pwr.firstDone) {
+    // Double Place: 2nd tile every 3rd turn (turns 3, 6, 9, ... for this player)
+    if (isPow && power?.id === "doublePlace" && ((playerTurns[cp] || 0) + 1) % 3 === 0 && !pwr.firstDone) {
       const s = scoreAndMark(b, config.playerCount, config.lineLen, scores);
       setBoard(b); setScores(s);
       for (let p = 0; p < config.playerCount; p++) {
@@ -1570,8 +1668,8 @@ export default function MegaTicTacToe() {
       setPwr({ ...pwr, firstDone: true }); toast("Place your second tile"); return;
     }
 
-    // Takeover/Block/Ghost: normal tile placed, now prompt for special action
-    if (pwr.active && !pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "ghost")) {
+    // Takeover/Block/Teleport: normal tile placed, now prompt for special action
+    if (pwr.active && !pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "teleport")) {
       const s = scoreAndMark(b, config.playerCount, config.lineLen, scores);
       setBoard(b); setScores(s);
       for (let p = 0; p < config.playerCount; p++) {
@@ -1584,24 +1682,30 @@ export default function MegaTicTacToe() {
           setScreen("review"); return;
         }
       }
-      const prompts = { takeover: "Now steal an opponent's tile", block: "Now place a wall", ghost: "Now place a ghost tile" };
+      const size = getBlockSize(config.lineLen);
+      const prompts = {
+        takeover: "Now steal an opponent's tile",
+        block: `Now pick top-left of a ${size}×${size} denial area`,
+        teleport: "Now pick one of your tiles to move",
+      };
       setPwr({ ...pwr, firstDone: true }); toast(prompts[power.id]); return;
     }
 
     setBoard(b);
     endTurn(b, { ...cooldowns });
-  }, [screen, board, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
+  }, [screen, board, blocks, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
 
   const togglePower = useCallback(() => {
     if (screen === "online-game") {
       if (onlineConnRef.current) onlineConnRef.current.powerToggle();
       return;
     }
-    if (pwr.active && !pwr.firstDone) { setPwr({ ...pwr, active: false, used: false }); return; }
+    if (pwr.active && !pwr.firstDone) { setPwr({ active: false, used: false, firstDone: false, tpSource: null }); return; }
     if (pwr.active && pwr.firstDone) return; // can't cancel after placing normal tile
-    const power = POWERS[config.powers[cp]];
-    toast("Place your tile, then use your power");
-    setPwr({ ...pwr, active: true, used: true });
+    // Don't reference `power` here — for teleport, a toast hint is different
+    const p = POWERS[config.powers[cp]];
+    toast(p.id === "teleport" ? "Place a tile, then pick one to move" : "Place your tile, then use your power");
+    setPwr({ ...pwr, active: true, used: true, tpSource: null });
   }, [screen, pwr, config, cp, toast]);
 
   const themedCss = `:root { ${themeVars(theme)} }\n${css}`;
@@ -1614,9 +1718,8 @@ export default function MegaTicTacToe() {
   const isPow = config?.mode === "powers";
   const power = isPow ? POWERS[config.powers[cp]] : null;
   const cd = cooldowns[cp] || 0;
-  const hasActiveGhost = isPow && power?.id === "ghost" && board.some(row => row.some(c => c && c.owner === cp && c.visible === false));
-  const canUse = isPow && cd === 0 && !pwr.used && power.id !== "doublePlace" && !hasActiveGhost;
-  const isDouble = isPow && power?.id === "doublePlace" && (playerTurns[cp] || 0) % 2 === 1;
+  const canUse = isPow && cd === 0 && !pwr.used && power && power.id !== "doublePlace";
+  const isDouble = isPow && power?.id === "doublePlace" && ((playerTurns[cp] || 0) + 1) % 3 === 0;
   const playerColor = PLAYERS[cp];
   const winnerColor = winner !== null ? PLAYERS[winner] : null;
 
@@ -1651,6 +1754,21 @@ export default function MegaTicTacToe() {
                 </span>
               </div>
               {!isDraw && <p style={{ position: "relative", fontSize: 12, color: "var(--textMuted)", marginTop: 6 }}>Completed {config.linesNeeded} line{config.linesNeeded > 1 ? "s" : ""} of {config.lineLen}</p>}
+              {isDraw && (
+                <div style={{ position: "relative", marginTop: 10, display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+                  {Array.from({ length: config.playerCount }).map((_, i) => (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", gap: 6,
+                      padding: "5px 10px", borderRadius: 8, background: "var(--surface)",
+                    }}>
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: PLAYERS[i].fill }} />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: PLAYERS[i].fill }}>{PLAYERS[i].name}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>{scores[i] || 0}</span>
+                      <span style={{ fontSize: 11, color: "var(--textMuted)" }}>/ {config.linesNeeded}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", padding: "10px 16px", gap: 10 }}>
@@ -1734,8 +1852,9 @@ export default function MegaTicTacToe() {
         )}
 
         {/* Board */}
-        <Board board={board} onCellClick={handleClick} lastMove={lastMove} winCells={winCells}
-          currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={isOnline ? onlineSlot : cp} />
+        <Board board={board} onCellClick={handleClick} lastMove={lastMove} lastMoves={lastMoves} winCells={winCells}
+          currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={isOnline ? onlineSlot : cp}
+          blocks={blocks} globalTurn={globalTurn} tpSource={pwr.tpSource || null} />
 
         {/* Bottom bar */}
         {isReview ? (
@@ -1757,13 +1876,24 @@ export default function MegaTicTacToe() {
               </div>
             </div>
             {power.id !== "doublePlace" && !pwr.firstDone && (
-              <button className="btn-hover" onClick={togglePower} disabled={!canUse && !pwr.active} style={{
-                padding: "8px 16px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
-                fontFamily: "inherit", cursor: (canUse || pwr.active) ? "pointer" : "default",
-                transition: "all 0.15s",
-                background: pwr.active ? "#F25C54" : canUse ? playerColor.fill : "var(--border)",
-                color: (canUse || pwr.active) ? "#fff" : "var(--textFaint)",
-              }}>{pwr.active ? "Cancel" : "Use"}</button>
+              <div style={{ position: "relative" }}>
+                <button className="btn-hover" onClick={togglePower} disabled={!canUse && !pwr.active} style={{
+                  padding: "8px 16px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
+                  fontFamily: "inherit", cursor: (canUse || pwr.active) ? "pointer" : "default",
+                  transition: "all 0.15s",
+                  background: pwr.active ? "#F25C54" : canUse ? playerColor.fill : "var(--border)",
+                  color: (canUse || pwr.active) ? "#fff" : "var(--textFaint)",
+                }}>{pwr.active ? "Cancel" : "Use"}</button>
+                {cd > 0 && !pwr.active && (
+                  <div style={{
+                    position: "absolute", top: -6, right: -6,
+                    minWidth: 18, height: 18, padding: "0 5px", borderRadius: 9,
+                    background: "#F25C54", color: "#fff", fontSize: 11, fontWeight: 700,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)", pointerEvents: "none",
+                  }}>{cd}</div>
+                )}
+              </div>
             )}
           </div>
         )}
