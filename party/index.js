@@ -219,9 +219,27 @@ export default class MegaTTTServer {
 
   handleRematch(conn) {
     if (this.phase !== "review") return;
-    this.phase = "lobby";
+    // Only host can trigger rematch (avoids race between both players clicking)
+    if (this.getSlot(conn.id) !== 0) return;
+    if (!this.config) { this.phase = "lobby"; this.broadcastState("rematch"); return; }
     this.stopTimer();
-    this.broadcastState("rematch");
+    // Reset game state; keep config and players
+    this.phase = "playing";
+    this.board = makeBoard(this.config.gridSize);
+    this.cp = 0;
+    this.turn = 1;
+    this.globalTurn = 1;
+    this.scores = {};
+    this.cooldowns = {};
+    this.playerTurns = {};
+    this.lastMove = null;
+    this.winner = null;
+    this.isDraw = false;
+    this.winCells = [];
+    this.pwr = { active: false, used: false, firstDone: false };
+    this.timeLeft = this.config.timer || 0;
+    this.broadcastState("game-started");
+    this.startTimer();
   }
 
   endTurn() {

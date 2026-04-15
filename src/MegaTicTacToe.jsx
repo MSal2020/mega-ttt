@@ -1,7 +1,7 @@
-import { useState, useCallback, useRef, useEffect, createContext, useContext } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, createContext, useContext } from "react";
 import {
   PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
-  findLines, revealGhosts, scoreAndMark, aiPickMove,
+  findLines, revealGhosts, scoreAndMark, aiPickMove, aiPickPowerAction,
   isBoardFull, getScoredCells, generateRoomCode,
 } from "../lib/gameLogic.js";
 import { createConnection } from "./multiplayer.js";
@@ -56,11 +56,76 @@ const css = `
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; overscroll-behavior: none; background: var(--bg); color: var(--text); transition: background 0.3s, color 0.3s; }
   input[type=range] { accent-color: #4A7BF7; }
   .cell:hover .cell-hover { background: rgba(74,123,247,0.06); }
-  .btn-hover { transition: transform 0.12s, box-shadow 0.12s, opacity 0.12s; }
+  .cell:hover .hover-dot { opacity: 0.22; transform: scale(1); }
+  .btn-hover { transition: transform 0.18s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.12s, opacity 0.12s; }
   .btn-hover:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-  .btn-hover:active { transform: translateY(0) scale(0.97); box-shadow: none; }
+  .btn-hover:active { transform: translateY(0) scale(0.93); box-shadow: none; transition: transform 0.08s ease-out, box-shadow 0.08s; }
+  @keyframes confettiFall { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); opacity: 0; } }
+  @keyframes bannerSlide { 0% { opacity: 0; transform: translateY(-18px) scale(0.95); } 60% { transform: translateY(2px) scale(1.02); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+  @keyframes modalFadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes modalCardIn { from { opacity: 0; transform: translateY(12px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  @keyframes bannerShine { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }
+  @keyframes skeletonShimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  @keyframes turnPulse { 0% { opacity: 0.75; } 100% { opacity: 1; } }
+  @keyframes turnGlow { 0% { opacity: 0; } 35% { opacity: 0.55; } 100% { opacity: 0; } }
   select { color-scheme: light dark; }
 `;
+
+function Confetti({ color }) {
+  const pieces = useMemo(() => {
+    const colors = [color, "#F2A93B", "#4DAA6D", "#E57AC6", "#4A7BF7"];
+    return Array.from({ length: 60 }, (_, i) => ({
+      id: i,
+      left: Math.random() * 100,
+      dx: (Math.random() - 0.5) * 300,
+      dy: 400 + Math.random() * 300,
+      rot: (Math.random() - 0.5) * 720,
+      size: 6 + Math.random() * 8,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      delay: Math.random() * 0.3,
+      duration: 1.4 + Math.random() * 1.2,
+      shape: Math.random() > 0.5 ? "50%" : "2px",
+    }));
+  }, [color]);
+  return (
+    <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 60, overflow: "hidden" }}>
+      {pieces.map(p => (
+        <div key={p.id} style={{
+          position: "absolute", top: "-20px", left: `${p.left}%`,
+          width: p.size, height: p.size, background: p.color, borderRadius: p.shape,
+          animation: `confettiFall ${p.duration}s ease-out ${p.delay}s forwards`,
+          "--dx": `${p.dx}px`, "--dy": `${p.dy}px`, "--rot": `${p.rot}deg`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+function RollingNumber({ value, style }) {
+  const [display, setDisplay] = useState(value);
+  const [prev, setPrev] = useState(value);
+  const [animating, setAnimating] = useState(false);
+  useEffect(() => {
+    if (value === display) return;
+    setPrev(display);
+    setAnimating(true);
+    const id = setTimeout(() => { setDisplay(value); setAnimating(false); }, 320);
+    return () => clearTimeout(id);
+  }, [value, display]);
+  const h = "1em";
+  return (
+    <span style={{ display: "inline-block", position: "relative", height: h, overflow: "hidden", verticalAlign: "bottom", minWidth: "0.6em", ...style }}>
+      <span style={{
+        display: "block",
+        transform: animating ? "translateY(-100%)" : "translateY(0)",
+        transition: animating ? "transform 0.32s cubic-bezier(0.34,1.56,0.64,1)" : "none",
+      }}>
+        <span style={{ display: "block", height: h, lineHeight: h }}>{animating ? prev : display}</span>
+        <span style={{ display: "block", height: h, lineHeight: h }}>{value}</span>
+      </span>
+    </span>
+  );
+}
 
 function Collapse({ open, maxH = 400, children }) {
   return (
@@ -168,6 +233,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState("connecting");
   const [copied, setCopied] = useState(false);
+  const [playerName, setPlayerName] = useState(() => localStorage.getItem("mtt-player-name") || "");
 
   // Config state (host only)
   const [mode, setMode] = useState("normal");
@@ -216,7 +282,8 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
     });
 
     connection.ws.addEventListener("open", () => {
-      connection.join(isHost ? "Host" : "Guest");
+      const name = (playerName || "").trim() || (isHost ? "Host" : "Guest");
+      connection.join(name);
       setStatus("connected");
     });
     connection.ws.addEventListener("error", () => {
@@ -286,14 +353,27 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
         )}
 
         {tab === "menu" && (
-          <div style={{ marginTop: 32 }}>
+          <div style={{ marginTop: 24 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Your Name</div>
+            <input
+              type="text"
+              placeholder="Enter your name"
+              maxLength={20}
+              value={playerName}
+              onChange={e => { const v = e.target.value; setPlayerName(v); localStorage.setItem("mtt-player-name", v); }}
+              style={{
+                width: "100%", padding: "10px 14px", borderRadius: 10, border: `1.5px solid ${t.border}`,
+                fontSize: 15, fontWeight: 500, fontFamily: "inherit", background: t.surface, color: t.text,
+                outline: "none", marginBottom: 20, boxSizing: "border-box",
+              }}
+            />
             <button className="btn-hover" onClick={createRoom} style={{
               width: "100%", padding: 16, borderRadius: 12, border: "none", fontSize: 15, fontWeight: 600,
               cursor: "pointer", background: t.btnPrimary, color: t.btnPrimaryText,
               fontFamily: "inherit", marginBottom: 12,
             }}>Create Room</button>
             <div style={{ fontSize: 12, color: t.textLabel, textAlign: "center", textTransform: "uppercase", letterSpacing: "0.5px", margin: "16px 0" }}>or join a friend</div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, width: "100%" }}>
               <input
                 type="text"
                 placeholder="ABCD"
@@ -301,13 +381,13 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                 value={joinCode}
                 onChange={e => setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
                 style={{
-                  flex: 1, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${t.border}`,
+                  flex: 1, minWidth: 0, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${t.border}`,
                   fontSize: 18, fontWeight: 700, textAlign: "center", letterSpacing: 6,
                   fontFamily: "inherit", background: t.surface, color: t.text, outline: "none",
                 }}
               />
               <button className="btn-hover" onClick={joinRoom} style={{
-                padding: "12px 20px", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600,
+                flexShrink: 0, padding: "12px 20px", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600,
                 cursor: "pointer", background: "#4A7BF7", color: "#fff", fontFamily: "inherit",
               }}>Join</button>
             </div>
@@ -316,6 +396,17 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
 
         {(tab === "create" || tab === "join") && (
           <div style={{ marginTop: 24 }}>
+            {status === "connecting" && (
+              <div style={{
+                padding: "8px 14px", borderRadius: 10, background: t.surface, marginBottom: 16,
+                display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: t.textMuted,
+                background: `linear-gradient(90deg, ${t.surface} 0%, ${t.surfaceAlt} 50%, ${t.surface} 100%)`,
+                backgroundSize: "200% 100%", animation: "skeletonShimmer 1.5s linear infinite",
+              }}>
+                <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#4A7BF7", animation: "pulse 1.5s infinite" }} />
+                Connecting to room...
+              </div>
+            )}
             {/* Room code display */}
             <div style={{ textAlign: "center", marginBottom: 24 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Room Code</div>
@@ -413,8 +504,43 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   );
 }
 
+function Tutorial({ onClose }) {
+  const t = useTheme();
+  const [step, setStep] = useState(0);
+  const steps = [
+    { title: "Welcome to Mega Tic Tac Toe", body: "Classic 3-in-a-row, reimagined on a huge grid. Play locally, vs AI, or online with friends." },
+    { title: "Big Grids", body: "Grids go up to 16×16. You need to complete multiple lines (e.g. 5 lines of 5) to win — so every move matters across the whole board." },
+    { title: "Scoring", body: "Each completed line counts toward your target. Scored cells stay on the board but can't be reused. Race your opponent to hit the line count first." },
+    { title: "Powers Mode", body: "Optional mode where each player picks a power: Takeover (steal a tile), Block (place a wall), Ghost (hidden tile), Double Place (two tiles per turn). Powers have cooldowns." },
+    { title: "You're Ready", body: "Try a small 6×6 grid first, then scale up. Have fun!" },
+  ];
+  const s = steps[step];
+  const last = step === steps.length - 1;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, animation: "modalFadeIn 0.22s ease-out" }}>
+      <div style={{ background: t.card, borderRadius: 16, padding: "28px 24px", maxWidth: 380, width: "100%", boxShadow: "0 20px 40px rgba(0,0,0,0.3)", animation: "modalCardIn 0.32s cubic-bezier(0.16,1,0.3,1)" }}>
+        <div style={{ display: "flex", gap: 4, marginBottom: 20 }}>
+          {steps.map((_, i) => (
+            <div key={i} style={{ flex: 1, height: 3, borderRadius: 2, background: i <= step ? "#4A7BF7" : t.border, transition: "background 0.3s" }} />
+          ))}
+        </div>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: t.text, marginBottom: 10 }}>{s.title}</h2>
+        <p style={{ fontSize: 14, color: t.textMuted, lineHeight: 1.5, marginBottom: 24 }}>{s.body}</p>
+        <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 13, color: t.textLabel, cursor: "pointer", fontFamily: "inherit", padding: "8px 4px" }}>Skip</button>
+          <button className="btn-hover" onClick={() => last ? onClose() : setStep(step + 1)} style={{ padding: "10px 24px", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: t.btnPrimary, color: t.btnPrimaryText, fontFamily: "inherit" }}>
+            {last ? "Got it" : "Next"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Setup({ onStart, onOnline, onStats, dark, setDark }) {
   const t = useTheme();
+  const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem("mtt-tutorial-seen"));
+  const closeTutorial = () => { localStorage.setItem("mtt-tutorial-seen", "1"); setShowTutorial(false); };
   const [mode, setMode] = useState("normal");
   const [gridSize, setGridSize] = useState(12);
   const [playerCount, setPlayerCount] = useState(2);
@@ -435,9 +561,10 @@ function Setup({ onStart, onOnline, onStats, dark, setDark }) {
 
   return (
     <div style={{ minHeight: "100dvh", background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none", transition: "background 0.3s" }}>
+      {showTutorial && <Tutorial onClose={closeTutorial} />}
       <div style={{ background: t.card, borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: t.cardShadow, animation: "slideUp 0.4s cubic-bezier(0.16,1,0.3,1)", transition: "background 0.3s, box-shadow 0.3s" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div />
+          <button onClick={() => setShowTutorial(true)} title="How to play" style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, opacity: 0.6 }}>?</button>
           <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px", textAlign: "center", color: t.text }}>Mega Tic Tac Toe</h1>
           <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, opacity: 0.6 }}>{dark ? "☀" : "☾"}</button>
         </div>
@@ -638,7 +765,7 @@ function Setup({ onStart, onOnline, onStats, dark, setDark }) {
 function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner }) {
   const t = useTheme();
   const n = board.length;
-  const cellSize = Math.max(28, Math.round(zoom));
+  const cellSize = Math.max(28, zoom);
   const gap = 1;
   const containerRef = useRef(null);
   const pinchRef = useRef(null);
@@ -763,6 +890,12 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
           animation: "miniIn 0.3s cubic-bezier(0.16,1,0.3,1)",
         }} />
       )}
+      <div style={{ position: "relative", flexShrink: 0 }}>
+      <div key={`pulse-${currentPlayer}`} style={{
+        position: "absolute", inset: -10, borderRadius: 14, pointerEvents: "none",
+        boxShadow: `inset 0 0 24px 2px ${PLAYERS[currentPlayer].fill}`,
+        animation: "turnGlow 0.95s cubic-bezier(0.22,1,0.36,1) forwards", opacity: 0,
+      }} />
       <div style={{
         display: "grid",
         gridTemplateColumns: `repeat(${n}, ${cellSize}px)`,
@@ -791,9 +924,16 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
               position: "relative", transition: "background 0.2s",
             }}>
               {clickable && !cell && (
-                <div className="cell-hover" style={{
-                  position: "absolute", inset: 0, borderRadius: 3, transition: "background 0.15s",
-                }} />
+                <>
+                  <div className="cell-hover" style={{
+                    position: "absolute", inset: 0, borderRadius: 3, transition: "background 0.15s",
+                  }} />
+                  <div className="hover-dot" style={{
+                    position: "absolute", width: cellSize * 0.55, height: cellSize * 0.55, borderRadius: "50%",
+                    background: PLAYERS[currentPlayer].fill, opacity: 0, transform: "scale(0.6)",
+                    transition: "opacity 0.18s, transform 0.18s cubic-bezier(0.34,1.56,0.64,1)", pointerEvents: "none",
+                  }} />
+                </>
               )}
               {isWall && (
                 <svg width={cellSize * 0.45} height={cellSize * 0.45} viewBox="0 0 20 20"
@@ -838,6 +978,7 @@ function Board({ board, onCellClick, lastMove, winCells, currentPlayer, actionMo
           );
         }))}
       </div>
+      </div>
     </div>
   );
 }
@@ -861,6 +1002,44 @@ export default function MegaTicTacToe() {
   const [isDraw, setIsDraw] = useState(false);
   const [pwr, setPwr] = useState({ active: false, used: false, firstDone: false });
   const [zoom, setZoom] = useState(44);
+  const zoomRef = useRef(44);
+  const zoomTweenRef = useRef(null);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  const tweenZoom = useCallback((delta) => {
+    if (zoomTweenRef.current) cancelAnimationFrame(zoomTweenRef.current);
+    const from = zoomRef.current;
+    const target = Math.min(72, Math.max(20, from + delta));
+    if (target === from) return;
+    const start = performance.now();
+    const duration = 220;
+    const ease = (t) => 1 - Math.pow(1 - t, 3); // easeOutCubic
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      setZoom(from + (target - from) * ease(t));
+      if (t < 1) zoomTweenRef.current = requestAnimationFrame(step);
+    };
+    zoomTweenRef.current = requestAnimationFrame(step);
+  }, []);
+
+  // Keyboard + scroll-wheel zoom shortcuts
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      if (e.key === "+" || e.key === "=") { e.preventDefault(); tweenZoom(8); }
+      else if (e.key === "-" || e.key === "_") { e.preventDefault(); tweenZoom(-8); }
+    };
+    const onWheel = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      tweenZoom(e.deltaY > 0 ? -6 : 6);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", onWheel);
+    };
+  }, [tweenZoom]);
   const [msg, setMsg] = useState(null);
   const [history, setHistory] = useState([]);
   const [timeLeft, setTimeLeft] = useState(0);
@@ -870,6 +1049,7 @@ export default function MegaTicTacToe() {
   const [onlineConn, setOnlineConn] = useState(null);
   const [onlineSlot, setOnlineSlot] = useState(-1);
   const [onlinePlayers, setOnlinePlayers] = useState([]);
+  const [connState, setConnState] = useState("connected"); // connected | reconnecting
   const onlineConnRef = useRef(null);
 
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
@@ -965,7 +1145,18 @@ export default function MegaTicTacToe() {
       try { handler(JSON.parse(e.data)); } catch {}
     };
     onlineConn.ws.addEventListener("message", wsHandler);
-    return () => onlineConn.ws.removeEventListener("message", wsHandler);
+    const onOpen = () => setConnState("connected");
+    const onDown = () => setConnState("reconnecting");
+    onlineConn.ws.addEventListener("open", onOpen);
+    onlineConn.ws.addEventListener("close", onDown);
+    onlineConn.ws.addEventListener("error", onDown);
+    setConnState(onlineConn.ws.readyState === 1 ? "connected" : "reconnecting");
+    return () => {
+      onlineConn.ws.removeEventListener("message", wsHandler);
+      onlineConn.ws.removeEventListener("open", onOpen);
+      onlineConn.ws.removeEventListener("close", onDown);
+      onlineConn.ws.removeEventListener("error", onDown);
+    };
   }, [onlineConn, applyOnlineState, toast]);
 
   // Record game stats when entering review screen
@@ -1042,9 +1233,15 @@ export default function MegaTicTacToe() {
   const boardRef = useRef(board);
   const cooldownsRef = useRef(cooldowns);
   const endTurnRef = useRef(endTurn);
+  const pwrRef = useRef(pwr);
+  const scoresRef = useRef(scores);
+  const playerTurnsRef = useRef(playerTurns);
   boardRef.current = board;
   cooldownsRef.current = cooldowns;
   endTurnRef.current = endTurn;
+  pwrRef.current = pwr;
+  scoresRef.current = scores;
+  playerTurnsRef.current = playerTurns;
 
   useEffect(() => {
     if (!config?.timer || screen !== "game") return;
@@ -1074,28 +1271,99 @@ export default function MegaTicTacToe() {
     return () => clearInterval(id);
   }, [screen, cp, config, toast]);
 
-  // AI auto-play
+  // AI auto-play (handles normal tiles + powers)
   useEffect(() => {
     if (screen !== "game" || !config?.ai || cp !== 1) return;
-    const delay = 400 + Math.random() * 300; // slight human-like delay
+    const isPow = config.mode === "powers";
+    const power = isPow ? POWERS[config.powers[1]] : null;
+    const delay = 900 + Math.random() * 500; // slower, more human-like
     const id = setTimeout(() => {
-      const move = aiPickMove(boardRef.current, 1, config.lineLen, config.playerCount);
-      if (move) {
+      const board = boardRef.current;
+      const curPwr = pwrRef.current;
+
+      // Step 2: execute power action after first tile was placed
+      if (isPow && curPwr.active && curPwr.firstDone && power && power.id !== "doublePlace") {
+        const move = aiPickPowerAction(board, 1, power.id, config.lineLen, config.playerCount);
+        if (!move) return;
         const [r, c] = move;
-        const b = boardRef.current.map(row => row.map(x => x ? {...x} : null));
-        b[r][c] = { owner: 1, visible: true };
-        setLastMove([r, c]);
-        setHistory(h => [...h, {
-          board: boardRef.current.map(row => row.map(x => x ? { ...x } : null)),
-          cp: 1, turn, globalTurn, scores: { ...scores }, cooldowns: { ...cooldownsRef.current },
-          playerTurns: { ...playerTurns }, lastMove, undoPlayer: 1,
-        }]);
-        setBoard(b);
-        endTurnRef.current(b, { ...cooldownsRef.current });
+        const b = cloneBoard(board);
+        if (power.id === "takeover") {
+          b[r][c] = { owner: 1, visible: true, anim: "steal" };
+          setBoard(b); setLastMove([r, c]);
+          endTurnRef.current(b, { ...cooldownsRef.current, 1: power.cd });
+        } else if (power.id === "block") {
+          b[r][c] = { wall: true, anim: "wall" };
+          setBoard(b);
+          endTurnRef.current(b, { ...cooldownsRef.current, 1: power.cd });
+        } else if (power.id === "ghost") {
+          b[r][c] = { owner: 1, visible: false, placedTurn: turn, anim: "ghost" };
+          setBoard(b); setLastMove([r, c]);
+          endTurnRef.current(b, { ...cooldownsRef.current });
+        }
+        return;
       }
+
+      // Decide to use power this turn
+      const cd = cooldownsRef.current[1] || 0;
+      const hasActiveGhost = isPow && power?.id === "ghost" && board.some(row => row.some(c => c && c.owner === 1 && c.visible === false));
+      const canUse = isPow && cd === 0 && !curPwr.used && power && power.id !== "doublePlace" && !hasActiveGhost;
+      // Use power ~70% of the time when available
+      const willUse = canUse && Math.random() < 0.7;
+
+      // Pick and place normal tile (step 1)
+      const move = aiPickMove(board, 1, config.lineLen, config.playerCount);
+      if (!move) return;
+      const [r, c] = move;
+      const b = cloneBoard(board);
+      b[r][c] = { owner: 1, visible: true };
+      setLastMove([r, c]);
+      setHistory(h => [...h, {
+        board: cloneBoard(board),
+        cp: 1, turn, globalTurn, scores: { ...scoresRef.current }, cooldowns: { ...cooldownsRef.current },
+        playerTurns: { ...playerTurnsRef.current }, lastMove, undoPlayer: 1,
+      }]);
+
+      // Double Place: first tile of a double turn
+      const isDouble = isPow && power?.id === "doublePlace" && (playerTurnsRef.current[1] || 0) % 2 === 1;
+      if (isDouble && !curPwr.firstDone) {
+        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current);
+        setBoard(b); setScores(s);
+        for (let p = 0; p < config.playerCount; p++) {
+          if ((s[p] || 0) >= config.linesNeeded) {
+            const cells = [];
+            for (let ri = 0; ri < b.length; ri++) for (let ci = 0; ci < b[ri].length; ci++)
+              if (b[ri][ci]?.owner === p && b[ri][ci]?.scored) cells.push([ri, ci]);
+            setWinner(p); setWinCells(cells); setScreen("review");
+            return;
+          }
+        }
+        setPwr({ active: false, used: false, firstDone: true });
+        return;
+      }
+
+      // Takeover/Block/Ghost: place normal tile, queue step 2
+      if (willUse) {
+        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current);
+        setBoard(b); setScores(s);
+        for (let p = 0; p < config.playerCount; p++) {
+          if ((s[p] || 0) >= config.linesNeeded) {
+            const cells = [];
+            for (let ri = 0; ri < b.length; ri++) for (let ci = 0; ci < b[ri].length; ci++)
+              if (b[ri][ci]?.owner === p && b[ri][ci]?.scored) cells.push([ri, ci]);
+            setWinner(p); setWinCells(cells); setScreen("review");
+            return;
+          }
+        }
+        setPwr({ active: true, used: true, firstDone: true });
+        return;
+      }
+
+      // Normal move
+      setBoard(b);
+      endTurnRef.current(b, { ...cooldownsRef.current });
     }, delay);
     return () => clearTimeout(id);
-  }, [screen, cp, config, turn, globalTurn, scores, playerTurns, lastMove]);
+  }, [screen, cp, config, turn, globalTurn, pwr, lastMove]);
 
   const undo = useCallback(() => {
     if (history.length === 0) return;
@@ -1229,23 +1497,44 @@ export default function MegaTicTacToe() {
     <ThemeCtx.Provider value={theme}>
       <style>{themedCss}</style>
       <div style={{ height: "100dvh", display: "flex", flexDirection: "column", background: "var(--bg)", userSelect: "none", WebkitUserSelect: "none", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif", overflow: "hidden", transition: "background 0.3s" }}>
+        {isReview && !isDraw && winnerColor && <Confetti color={winnerColor.fill} />}
 
         {/* Header */}
         <div style={{ background: "var(--card)", borderBottom: "1px solid var(--borderLight)", transition: "background 0.3s" }}>
           {isReview ? (
-            <div style={{ padding: "12px 16px", textAlign: "center", animation: "bannerIn 0.4s cubic-bezier(0.16,1,0.3,1)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                {winnerColor && <div style={{ width: 14, height: 14, borderRadius: "50%", background: winnerColor.fill, animation: "popIn 0.3s cubic-bezier(0.34,1.56,0.64,1)" }} />}
-                <span style={{ fontSize: 17, fontWeight: 700 }}>{isDraw ? "It's a draw!" : `${winnerColor.name} wins!`}</span>
+            <div style={{
+              padding: "18px 16px", textAlign: "center", animation: "bannerSlide 0.5s cubic-bezier(0.34,1.56,0.64,1)",
+              background: isDraw
+                ? "var(--card)"
+                : `radial-gradient(ellipse 80% 140% at 50% 0%, ${winnerColor.fill}55 0%, ${winnerColor.fill}22 35%, ${winnerColor.fill}08 65%, var(--card) 100%)`,
+              position: "relative", overflow: "hidden",
+            }}>
+              {!isDraw && (
+                <div style={{
+                  position: "absolute", top: 0, left: 0, width: "40%", height: "100%",
+                  background: `linear-gradient(100deg, transparent 0%, ${winnerColor.fill}33 50%, transparent 100%)`,
+                  animation: "bannerShine 1.6s ease-out 0.3s",
+                  pointerEvents: "none",
+                }} />
+              )}
+              <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                {winnerColor && <div style={{ width: 20, height: 20, borderRadius: "50%", background: winnerColor.fill, boxShadow: `0 0 0 5px ${winnerColor.fill}33, 0 2px 12px ${winnerColor.fill}80`, animation: "popIn 0.4s cubic-bezier(0.34,1.56,0.64,1)" }} />}
+                <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.3px", color: isDraw ? "var(--text)" : winnerColor.fill, textShadow: isDraw ? undefined : `0 1px 8px ${winnerColor.fill}40` }}>
+                  {isDraw ? "It's a draw!" : `${winnerColor.name} wins!`}
+                </span>
               </div>
-              {!isDraw && <p style={{ fontSize: 12, color: "var(--textMuted)", marginTop: 4 }}>Completed {config.linesNeeded} line{config.linesNeeded > 1 ? "s" : ""} of {config.lineLen}</p>}
+              {!isDraw && <p style={{ position: "relative", fontSize: 12, color: "var(--textMuted)", marginTop: 6 }}>Completed {config.linesNeeded} line{config.linesNeeded > 1 ? "s" : ""} of {config.lineLen}</p>}
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", padding: "10px 16px", gap: 10 }}>
               <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "var(--textLabel)" }}>←</button>
               <div style={{ width: 12, height: 12, borderRadius: "50%", background: playerColor.fill, boxShadow: `0 0 0 3px ${playerColor.light}`, transition: "background 0.3s, box-shadow 0.3s" }} />
               <span key={cp} style={{ fontSize: 15, fontWeight: 600, flex: 1, color: playerColor.fill, animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)" }}>
-                {isOnline ? (cp === onlineSlot ? "Your turn" : "Opponent's turn") : config.ai && cp === 1 ? "AI thinking..." : `${playerColor.name}'s turn`}
+                {isOnline ? (() => {
+                  const p = onlinePlayers.find(p => p.slot === cp);
+                  const nm = p?.name || (cp === onlineSlot ? "You" : "Opponent");
+                  return cp === onlineSlot ? "Your turn" : `${nm}'s turn`;
+                })() : config.ai && cp === 1 ? "AI thinking..." : `${playerColor.name}'s turn`}
               </span>
               <span style={{ fontSize: 12, color: "var(--textLabel)" }}>Turn {turn}</span>
               {!isOnline && history.length > 0 && !pwr.firstDone && (
@@ -1261,18 +1550,26 @@ export default function MegaTicTacToe() {
                 background: (isReview ? i === winner : i === cp) ? PLAYERS[i].light : "var(--surface)",
               }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", background: PLAYERS[i].fill }} />
-                <span key={scores[i] || 0} style={{
+                <span style={{
                   fontSize: 12, fontWeight: 500,
                   color: (isReview ? i === winner : i === cp) ? PLAYERS[i].fill : "var(--textMuted)",
                   transition: "color 0.3s",
-                  animation: (scores[i] || 0) > 0 ? "scoreBump 0.35s cubic-bezier(0.34,1.56,0.64,1)" : undefined,
+                  display: "inline-flex", alignItems: "center",
                 }}>
-                  {scores[i] || 0}/{config.linesNeeded}
+                  <RollingNumber value={scores[i] || 0} />/{config.linesNeeded}
                 </span>
               </div>
             ))}
           </div>
         </div>
+
+        {/* Reconnect banner */}
+        {isOnline && connState === "reconnecting" && (
+          <div style={{ background: "#F59E0B", color: "#fff", padding: "6px 16px", fontSize: 13, fontWeight: 600, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff", animation: "pulse 1s ease-in-out infinite" }} />
+            Reconnecting...
+          </div>
+        )}
 
         {/* Timer bar */}
         {config.timer > 0 && !isReview && (
@@ -1293,8 +1590,8 @@ export default function MegaTicTacToe() {
 
         {/* Zoom controls */}
         <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "4px 16px", background: "var(--bg)" }}>
-          <button className="btn-hover" onClick={() => setZoom(z => Math.max(20, z - 6))} style={{ width: 28, height: 28, borderRadius: 7, border: "1.5px solid var(--border)", background: "var(--card)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--textMuted)" }}>−</button>
-          <button className="btn-hover" onClick={() => setZoom(z => Math.min(72, z + 6))} style={{ width: 28, height: 28, borderRadius: 7, border: "1.5px solid var(--border)", background: "var(--card)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--textMuted)" }}>+</button>
+          <button className="btn-hover" onClick={() => tweenZoom(-8)} style={{ width: 28, height: 28, borderRadius: 7, border: "1.5px solid var(--border)", background: "var(--card)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--textMuted)" }}>−</button>
+          <button className="btn-hover" onClick={() => tweenZoom(8)} style={{ width: 28, height: 28, borderRadius: 7, border: "1.5px solid var(--border)", background: "var(--card)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--textMuted)" }}>+</button>
         </div>
 
         {/* Toast */}
