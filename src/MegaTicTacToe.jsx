@@ -530,7 +530,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
           <div style={{ marginTop: 24 }}>
             {status === "connecting" && (
               <div style={{
-                padding: "8px 14px", borderRadius: 10, background: t.surface, marginBottom: 16,
+                padding: "8px 14px", borderRadius: 10, marginBottom: 16,
                 display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: t.textMuted,
                 background: `linear-gradient(90deg, ${t.surface} 0%, ${t.surfaceAlt} 50%, ${t.surface} 100%)`,
                 backgroundSize: "200% 100%", animation: "skeletonShimmer 1.5s linear infinite",
