@@ -18,6 +18,7 @@ export default class MegaTTTServer {
   reset() {
     this.players = [];       // [{ id, name, slot }]
     this.phase = "lobby";    // lobby | playing | review
+    this.rematchVotes = new Set(); // slots that have voted for rematch
     this.config = null;
     this.board = [];
     this.cp = 0;
@@ -325,10 +326,24 @@ export default class MegaTTTServer {
 
   handleRematch(conn) {
     if (this.phase !== "review") return;
-    // Only host can trigger rematch (avoids race between both players clicking)
-    if (this.getSlot(conn.id) !== 0) return;
-    if (!this.config) { this.phase = "lobby"; this.broadcastState("rematch"); return; }
+    const slot = this.getSlot(conn.id);
+    if (slot < 0) return; // spectator or unknown
+    // Tally the vote
+    this.rematchVotes.add(slot);
+    const activeSlots = this.players.filter(p => !p.disconnected && !p.spectator).map(p => p.slot);
+    const voted = activeSlots.filter(s => this.rematchVotes.has(s));
+    this.broadcast({
+      type: "rematch-vote",
+      votedSlots: voted,
+      needed: activeSlots.length,
+      count: voted.length,
+    });
+    // Require every connected, non-spectator player to vote
+    const everyoneReady = activeSlots.length > 0 && activeSlots.every(s => this.rematchVotes.has(s));
+    if (!everyoneReady) return;
+    if (!this.config) { this.rematchVotes.clear(); this.phase = "lobby"; this.broadcastState("rematch"); return; }
     this.stopTimer();
+    this.rematchVotes.clear();
     // Reset game state; keep config and players
     this.phase = "playing";
     this.board = makeBoard(this.config.gridSize);

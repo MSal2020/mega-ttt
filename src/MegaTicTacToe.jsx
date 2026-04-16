@@ -1512,6 +1512,7 @@ export default function MegaTicTacToe() {
   const [onlinePlayers, setOnlinePlayers] = useState([]);
   const [connState, setConnState] = useState("connected"); // connected | reconnecting
   const [emoteFeed, setEmoteFeed] = useState([]); // [{id, slot, name, emote, at}]
+  const [rematchVote, setRematchVote] = useState({ votedSlots: [], needed: 0, count: 0 });
   const onlineConnRef = useRef(null);
 
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
@@ -1718,7 +1719,7 @@ export default function MegaTicTacToe() {
       setZoom(Math.min(52, Math.max(22, Math.floor(vw / msg.config.gridSize))));
     }
 
-    if (msg.phase === "playing") setScreen("online-game");
+    if (msg.phase === "playing") { setScreen("online-game"); setRematchVote({ votedSlots: [], needed: 0, count: 0 }); }
     else if (msg.phase === "review") setScreen("online-review");
     else if (msg.phase === "lobby") setScreen("online-lobby");
   }, []);
@@ -1762,6 +1763,10 @@ export default function MegaTicTacToe() {
       }
       if (msg.type === "host-migrated") {
         toast(`${msg.newHostName} is now the host`);
+        return;
+      }
+      if (msg.type === "rematch-vote") {
+        setRematchVote({ votedSlots: msg.votedSlots || [], needed: msg.needed || 0, count: msg.count || 0 });
         return;
       }
       if (msg.type === "emote") {
@@ -2375,7 +2380,7 @@ export default function MegaTicTacToe() {
           <div style={{ display: "flex", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1)" }}>
             <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }}>{isOnline ? "Leave" : "Setup"}</button>
             <button className="btn-hover" onClick={shareSnapshot} style={{ padding: "12px 14px", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }} title="Share board image">Share</button>
-            <button className="btn-hover" onClick={() => isOnline && onlineConnRef.current ? onlineConnRef.current.rematch() : startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--btnPrimary)", color: "var(--btnPrimaryText)", fontFamily: "inherit" }}>{isOnline ? "Rematch" : "Play Again"}</button>
+            <button className="btn-hover" disabled={isOnline && rematchVote.votedSlots.includes(onlineSlot)} onClick={() => isOnline && onlineConnRef.current ? onlineConnRef.current.rematch() : startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--btnPrimary)", color: "var(--btnPrimaryText)", fontFamily: "inherit", opacity: isOnline && rematchVote.votedSlots.includes(onlineSlot) ? 0.6 : 1 }}>{isOnline ? (rematchVote.votedSlots.includes(onlineSlot) ? `Waiting ${rematchVote.count}/${rematchVote.needed}` : (rematchVote.needed > 0 ? `Rematch ${rematchVote.count}/${rematchVote.needed}` : "Rematch")) : "Play Again"}</button>
           </div>
         ) : isPow && (
           <div key={cp} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.2s cubic-bezier(0.16,1,0.3,1)" }}>
