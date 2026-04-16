@@ -46,6 +46,7 @@ export function createConnection(roomCode, onMessage) {
     setConfig(config) { return send({ type: "config", config }); },
     start() { return send({ type: "start" }); },
     move(r, c) { return send({ type: "move", r, c }); },
+    lineOffset(offset) { return send({ type: "line-offset", offset }); },
     powerToggle() { return send({ type: "power-toggle" }); },
     rematch() { return send({ type: "rematch" }); },
     emote(emote) { return send({ type: "emote", emote }); },

@@ -1,7 +1,8 @@
 import {
-  makeBoard, cloneBoard, scoreAndMark, revealGhosts,
+  makeBoard, cloneBoard, scoreAndMark, applyPendingLineScore, revealGhosts,
   isBoardFull, getScoredCells, POWERS,
   getBlockSize, getPowerCd, isBlocked, pruneBlocks,
+  canPickLineSlot,
 } from "../lib/gameLogic.js";
 
 /**
@@ -35,6 +36,7 @@ export default class MegaTTTServer {
     this.blocks = [];
     this.timerInterval = null;
     this.timeLeft = 0;
+    this.pendingLinePick = null; // { pending, resume, extra? }
   }
 
   onConnect(conn) {
@@ -82,6 +84,7 @@ export default class MegaTTTServer {
       case "config": return this.handleConfig(conn, data);
       case "start": return this.handleStart(conn);
       case "move": return this.handleMove(conn, data);
+      case "line-offset": return this.handleLineOffset(conn, data);
       case "power-toggle": return this.handlePowerToggle(conn);
       case "rematch": return this.handleRematch(conn);
       case "emote": return this.handleEmote(conn, data);
@@ -204,13 +207,22 @@ export default class MegaTTTServer {
     this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
     this.blocks = [];
     this.timeLeft = this.config.timer || 0;
+    this.pendingLinePick = null;
 
     this.broadcastState("game-started");
     this.startTimer();
   }
 
+  teamsArg() {
+    return this.config?.teams ? [[0, 2], [1, 3]] : null;
+  }
+
   handleMove(conn, data) {
     if (this.phase !== "playing") return;
+    if (this.pendingLinePick) {
+      conn.send(JSON.stringify({ type: "error", message: "Choose which line segment to score first" }));
+      return;
+    }
     const slot = this.getSlot(conn.id);
     if (slot === -1 || slot !== this.cp) return; // not your turn
 
@@ -289,9 +301,14 @@ export default class MegaTTTServer {
 
     // Double Place: every 3rd turn — first tile
     if (isPow && power?.id === "doublePlace" && ((this.playerTurns[this.cp] || 0) + 1) % 3 === 0 && !this.pwr.firstDone) {
-      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.config.teams ? [[0,2],[1,3]] : null);
-      this.scores = s;
-      if (this.checkWin(s)) return;
+      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.teamsArg());
+      this.scores = s.scores;
+      if (s.pending) {
+        this.pendingLinePick = { pending: s.pending, resume: "doublePlace" };
+        this.broadcastState("pending-line");
+        return;
+      }
+      if (this.checkWin(this.scores)) return;
       this.pwr = { active: false, used: false, firstDone: true, tpSource: null };
       this.broadcastState("move-applied");
       return;
@@ -299,9 +316,14 @@ export default class MegaTTTServer {
 
     // Takeover/Block/Teleport: normal tile placed, now wait for power action
     if (this.pwr.active && !this.pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "teleport")) {
-      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.config.teams ? [[0,2],[1,3]] : null);
-      this.scores = s;
-      if (this.checkWin(s)) return;
+      const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.teamsArg());
+      this.scores = s.scores;
+      if (s.pending) {
+        this.pendingLinePick = { pending: s.pending, resume: "powerFirst" };
+        this.broadcastState("pending-line");
+        return;
+      }
+      if (this.checkWin(this.scores)) return;
       this.pwr = { ...this.pwr, firstDone: true };
       this.broadcastState("move-applied");
       return;
@@ -311,8 +333,63 @@ export default class MegaTTTServer {
     this.endTurn();
   }
 
+  handleLineOffset(conn, data) {
+    if (this.phase !== "playing" || !this.pendingLinePick) return;
+    const slot = this.getSlot(conn.id);
+    const { pending, resume } = this.pendingLinePick;
+    if (!canPickLineSlot(pending, slot)) {
+      conn.send(JSON.stringify({ type: "error", message: "Not your line choice" }));
+      return;
+    }
+    const offset = data.offset | 0;
+    if (offset < 0 || offset + this.config.lineLen > pending.cells.length) return;
+
+    const extra = this.pendingLinePick.extra;
+
+    let r = applyPendingLineScore(
+      this.board,
+      this.config.playerCount,
+      this.config.lineLen,
+      pending,
+      offset,
+      this.scores,
+      this.teamsArg()
+    );
+    this.scores = r.scores;
+
+    while (r.pending) {
+      this.pendingLinePick = { pending: r.pending, resume, extra };
+      this.broadcastState("pending-line");
+      return;
+    }
+    this.pendingLinePick = null;
+
+    if (resume === "endTurnFirst") {
+      this.afterFirstScoreOfEndTurn();
+      return;
+    }
+    if (resume === "endTurnSecond") {
+      if (this.checkWin(this.scores)) return;
+      this.advanceTurnFromEndTurn();
+      return;
+    }
+    if (resume === "doublePlace") {
+      if (this.checkWin(this.scores)) return;
+      this.pwr = { active: false, used: false, firstDone: true, tpSource: null };
+      this.broadcastState("move-applied");
+      return;
+    }
+    if (resume === "powerFirst") {
+      if (this.checkWin(this.scores)) return;
+      this.pwr = { ...this.pwr, firstDone: true };
+      this.broadcastState("move-applied");
+      return;
+    }
+  }
+
   handlePowerToggle(conn) {
     if (this.phase !== "playing") return;
+    if (this.pendingLinePick) return;
     const slot = this.getSlot(conn.id);
     if (slot !== this.cp) return;
 
@@ -360,14 +437,24 @@ export default class MegaTTTServer {
     this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
     this.blocks = [];
     this.timeLeft = this.config.timer || 0;
+    this.pendingLinePick = null;
     this.broadcastState("game-started");
     this.startTimer();
   }
 
   endTurn() {
-    const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.config.teams ? [[0,2],[1,3]] : null);
-    this.scores = s;
-    if (this.checkWin(s)) return;
+    const s = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.teamsArg());
+    this.scores = s.scores;
+    if (s.pending) {
+      this.pendingLinePick = { pending: s.pending, resume: "endTurnFirst" };
+      this.broadcastState("pending-line");
+      return;
+    }
+    this.afterFirstScoreOfEndTurn();
+  }
+
+  afterFirstScoreOfEndTurn() {
+    if (this.checkWin(this.scores)) return;
     if (isBoardFull(this.board)) {
       this.phase = "review";
       this.isDraw = true;
@@ -383,10 +470,21 @@ export default class MegaTTTServer {
     if (this.cooldowns[next] > 0) this.cooldowns[next]--;
 
     this.board = revealGhosts(this.board, nextRound);
-    const s2 = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, s, this.config.teams ? [[0,2],[1,3]] : null);
-    this.scores = s2;
-    if (this.checkWin(s2)) return;
+    const s2 = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.teamsArg());
+    this.scores = s2.scores;
+    if (s2.pending) {
+      this.pendingLinePick = { pending: s2.pending, resume: "endTurnSecond" };
+      this.broadcastState("pending-line");
+      return;
+    }
+    if (this.checkWin(this.scores)) return;
 
+    this.advanceTurnFromEndTurn();
+  }
+
+  advanceTurnFromEndTurn() {
+    const next = (this.cp + 1) % this.config.playerCount;
+    const nextGT = this.globalTurn + 1;
     this.playerTurns[this.cp] = (this.playerTurns[this.cp] || 0) + 1;
     this.cp = next;
     this.globalTurn = nextGT;
@@ -417,6 +515,7 @@ export default class MegaTTTServer {
     this.stopTimer();
     if (!this.config?.timer) return;
     this.timerInterval = setInterval(() => {
+      if (this.pendingLinePick) return;
       this.timeLeft--;
       if (this.timeLeft <= 0) {
         this.stopTimer();
@@ -471,6 +570,7 @@ export default class MegaTTTServer {
       pwr: this.pwr,
       blocks: this.blocks,
       timeLeft: this.timeLeft,
+      pendingLinePick: this.pendingLinePick,
       players: this.players.map(p => ({ slot: p.slot, name: p.name })),
     };
   }

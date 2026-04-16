@@ -1,13 +1,23 @@
 import { useState, useCallback, useRef, useEffect, useMemo, createContext, useContext } from "react";
 import {
   PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
-  findLines, revealGhosts, scoreAndMark, aiPickMove, aiPickPowerAction,
+  revealGhosts, scoreAndMark, applyPendingLineScore, aiPickMove, aiPickPowerAction,
+  canPickLineSlot,
   isBoardFull, getScoredCells, generateRoomCode,
   getBlockSize, getPowerCd, isBlocked, pruneBlocks,
 } from "../lib/gameLogic.js";
 import { createConnection, subscribeToLobby } from "./multiplayer.js";
 import { sfx, haptic, soundEnabled, setSoundEnabled, hapticEnabled, setHapticEnabled } from "./sounds.js";
 import { getStats, recordGame, clearStats, getTotalGames, getTotalWins, getWinRate } from "./stats.js";
+
+/** Resolve scoring for AI: always uses the first valid segment on overlong lines. */
+function flushScorePending(b, playerCount, lineLen, scoresIn, teams) {
+  let r = scoreAndMark(b, playerCount, lineLen, scoresIn, teams);
+  while (r.pending) {
+    r = applyPendingLineScore(b, playerCount, lineLen, r.pending, 0, r.scores, teams);
+  }
+  return r.scores;
+}
 
 const THEMES = {
   light: {
@@ -1137,7 +1147,7 @@ function Setup({ onStart, onOnline, onStats, onResume, dark, setDark }) {
   );
 }
 
-function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner, blocks = [], globalTurn = 1, tpSource = null, cursor = null }) {
+function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner, blocks = [], globalTurn = 1, tpSource = null, cursor = null, linePickCells = null }) {
   const t = useTheme();
   const n = board.length;
   const cellSize = Math.max(28, zoom);
@@ -1206,6 +1216,7 @@ function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, current
   }, [zoom, onZoom]);
 
   const winSet = new Set(winCells.map(([r,c]) => `${r},${c}`));
+  const linePickSet = linePickCells ? new Set(linePickCells.map(([r, c]) => `${r},${c}`)) : null;
 
   // Minimap
   const miniRef = useRef(null);
@@ -1315,6 +1326,7 @@ function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, current
 
           // Last-move trail: newest first, older = more faded
           const trailIdx = lastMoves.findIndex(([mr, mc]) => mr === r && mc === c);
+          const linePick = linePickSet && linePickSet.has(`${r},${c}`);
 
           return (
             <div key={`${r}-${c}`} className={clickable ? "cell" : undefined} onClick={() => onCellClick(r, c)} style={{
@@ -1402,6 +1414,14 @@ function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, current
                   position: "absolute", inset: 1, borderRadius: 3,
                   border: "2px solid #F25C54", background: "rgba(242,92,84,0.06)",
                   animation: "slideUp 0.2s ease-out",
+                }} />
+              )}
+              {linePick && (
+                <div style={{
+                  position: "absolute", inset: 0, borderRadius: 3,
+                  border: `2px dashed ${color?.ring || "var(--textMuted)"}`,
+                  pointerEvents: "none",
+                  opacity: 0.85,
                 }} />
               )}
             </div>
@@ -1514,6 +1534,8 @@ export default function MegaTicTacToe() {
   const [emoteFeed, setEmoteFeed] = useState([]); // [{id, slot, name, emote, at}]
   const [rematchVote, setRematchVote] = useState({ votedSlots: [], needed: 0, count: 0 });
   const onlineConnRef = useRef(null);
+  /** Longer-than-needed line: player must pick a contiguous segment (sync with server `pendingLinePick`). */
+  const [pendingLinePick, setPendingLinePick] = useState(null);
 
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
 
@@ -1689,6 +1711,7 @@ export default function MegaTicTacToe() {
     setBlocks([]); setLastMoves([]);
     setMsg(null); setHistory([]); setReplayIdx(null);
     setTimeLeft(cfg.timer || 0);
+    setPendingLinePick(null);
     const vw = Math.min(window.innerWidth - 32, 600);
     setZoom(Math.min(52, Math.max(22, Math.floor(vw / cfg.gridSize))));
     setScreen("game");
@@ -1713,6 +1736,7 @@ export default function MegaTicTacToe() {
     if (msg.timeLeft !== undefined) setTimeLeft(msg.timeLeft);
     if (msg.you !== undefined) setOnlineSlot(msg.you);
     if (msg.players) setOnlinePlayers(msg.players);
+    if (msg.pendingLinePick !== undefined) setPendingLinePick(msg.pendingLinePick);
 
     if (msg.config?.gridSize) {
       const vw = Math.min(window.innerWidth - 32, 600);
@@ -1828,68 +1852,166 @@ export default function MegaTicTacToe() {
     recordGame({ mode, result, gridSize: config?.gridSize });
   }, [screen, winner, isDraw, config, onlineSlot, globalTurn]);
 
-  const endTurn = useCallback((newBoard, newCd) => {
-    const s = scoreAndMark(newBoard, config.playerCount, config.lineLen, scores, config.teams ? [[0,2],[1,3]] : null);
+  const teamsArr = useMemo(() => (config?.teams ? [[0, 2], [1, 3]] : null), [config?.teams]);
+
+  const afterFirstScoreEndTurn = useCallback((newBoard, newCd, sScores) => {
     for (let p = 0; p < config.playerCount; p++) {
-      if ((s[p] || 0) >= config.linesNeeded) {
+      if ((sScores[p] || 0) >= config.linesNeeded) {
         const allScored = [];
         for (let r = 0; r < newBoard.length; r++) for (let c = 0; c < newBoard[r].length; c++) {
-          if (newBoard[r][c]?.owner === p && newBoard[r][c]?.scored) allScored.push([r,c]);
+          if (newBoard[r][c]?.owner === p && newBoard[r][c]?.scored) allScored.push([r, c]);
         }
-        setBoard(newBoard); setScores(s); setWinner(p);
+        setBoard(newBoard); setScores(sScores); setWinner(p);
         setWinCells(allScored);
         setScreen("review"); return;
       }
     }
     let full = true;
     outer: for (let r = 0; r < newBoard.length; r++) for (let c = 0; c < newBoard[0].length; c++) if (!newBoard[r][c]) { full = false; break outer; }
-    if (full) { setBoard(newBoard); setScores(s); setIsDraw(true); setScreen("review"); return; }
+    if (full) { setBoard(newBoard); setScores(sScores); setIsDraw(true); setScreen("review"); return; }
 
     const next = (cp + 1) % config.playerCount;
     const nextGT = globalTurn + 1;
     const nextRound = next === 0 ? turn + 1 : turn;
     const cd = { ...newCd }; if (cd[next] > 0) cd[next]--;
     const revealed = revealGhosts(newBoard, nextRound);
-    const s2 = scoreAndMark(revealed, config.playerCount, config.lineLen, s, config.teams ? [[0,2],[1,3]] : null);
+    const s2 = scoreAndMark(revealed, config.playerCount, config.lineLen, sScores, teamsArr);
+    if (s2.pending) {
+      setBoard(revealed);
+      setScores(s2.scores);
+      setPendingLinePick({ pending: s2.pending, resume: "endTurnSecond", extra: { cd, next, nextGT } });
+      return;
+    }
     for (let p = 0; p < config.playerCount; p++) {
-      if ((s2[p] || 0) >= config.linesNeeded) {
+      if ((s2.scores[p] || 0) >= config.linesNeeded) {
         const allScored = [];
         for (let r = 0; r < revealed.length; r++) for (let c = 0; c < revealed[r].length; c++) {
-          if (revealed[r][c]?.owner === p && revealed[r][c]?.scored) allScored.push([r,c]);
+          if (revealed[r][c]?.owner === p && revealed[r][c]?.scored) allScored.push([r, c]);
         }
-        setBoard(revealed); setScores(s2); setWinner(p);
+        setBoard(revealed); setScores(s2.scores); setWinner(p);
         setWinCells(allScored);
         setScreen("review"); return;
       }
     }
-    setBoard(revealed); setScores(s2); setCooldowns(cd);
+    setBoard(revealed); setScores(s2.scores); setCooldowns(cd);
     setPlayerTurns(pt => ({ ...pt, [cp]: (pt[cp] || 0) + 1 }));
     setCp(next); setGlobalTurn(nextGT);
     if (next === 0) setTurn(t => t + 1);
     setPwr({ active: false, used: false, firstDone: false, tpSource: null });
-    // Prune expired block areas based on the new globalTurn
     setBlocks(bs => pruneBlocks(bs, nextGT));
     if (config.timer) setTimeLeft(config.timer);
-  }, [config, cp, globalTurn, turn, scores]);
+  }, [config, cp, globalTurn, turn, teamsArr]);
+
+  const endTurn = useCallback((newBoard, newCd) => {
+    const s = scoreAndMark(newBoard, config.playerCount, config.lineLen, scores, teamsArr);
+    if (s.pending) {
+      setBoard(newBoard);
+      setScores(s.scores);
+      setPendingLinePick({ pending: s.pending, resume: "endTurnFirst", extra: { newCd } });
+      return;
+    }
+    afterFirstScoreEndTurn(newBoard, newCd, s.scores);
+  }, [config, scores, teamsArr, afterFirstScoreEndTurn]);
+
+  const pendingLinePickRef = useRef(null);
+  useEffect(() => { pendingLinePickRef.current = pendingLinePick; }, [pendingLinePick]);
+
+  const boardRef = useRef(board);
+  const scoresRef = useRef(scores);
+  boardRef.current = board;
+  scoresRef.current = scores;
+
+  const continueLinePick = useCallback((offset) => {
+    const pl = pendingLinePickRef.current;
+    if (!pl) return;
+    const b = cloneBoard(boardRef.current);
+    let r = applyPendingLineScore(b, config.playerCount, config.lineLen, pl.pending, offset, scoresRef.current, teamsArr);
+    while (r.pending) {
+      if (config.ai && r.pending.playerIds.includes(1)) {
+        r = applyPendingLineScore(b, config.playerCount, config.lineLen, r.pending, 0, r.scores, teamsArr);
+      } else {
+        setBoard(b);
+        setScores(r.scores);
+        setPendingLinePick({ pending: r.pending, resume: pl.resume, extra: pl.extra });
+        return;
+      }
+    }
+    setBoard(b);
+    setScores(r.scores);
+    setPendingLinePick(null);
+    const resume = pl.resume;
+    if (resume === "endTurnFirst") {
+      afterFirstScoreEndTurn(b, pl.extra.newCd, r.scores);
+    } else if (resume === "endTurnSecond") {
+      const { cd, next, nextGT } = pl.extra;
+      for (let p = 0; p < config.playerCount; p++) {
+        if ((r.scores[p] || 0) >= config.linesNeeded) {
+          const allScored = [];
+          for (let ri = 0; ri < b.length; ri++) for (let ci = 0; ci < b[ri].length; ci++) {
+            if (b[ri][ci]?.owner === p && b[ri][ci]?.scored) allScored.push([ri, ci]);
+          }
+          setWinner(p); setWinCells(allScored);
+          setScreen("review"); return;
+        }
+      }
+      setCooldowns(cd);
+      setPlayerTurns(pt => ({ ...pt, [cp]: (pt[cp] || 0) + 1 }));
+      setCp(next); setGlobalTurn(nextGT);
+      if (next === 0) setTurn(t => t + 1);
+      setPwr({ active: false, used: false, firstDone: false, tpSource: null });
+      setBlocks(bs => pruneBlocks(bs, nextGT));
+      if (config.timer) setTimeLeft(config.timer);
+    } else if (resume === "doublePlace") {
+      for (let p = 0; p < config.playerCount; p++) {
+        if ((r.scores[p] || 0) >= config.linesNeeded) {
+          const allScored = [];
+          for (let ri = 0; ri < b.length; ri++) for (let ci = 0; ci < b[ri].length; ci++) {
+            if (b[ri][ci]?.owner === p && b[ri][ci]?.scored) allScored.push([ri, ci]);
+          }
+          setWinner(p); setWinCells(allScored);
+          setScreen("review"); return;
+        }
+      }
+      setPwr({ active: false, used: false, firstDone: true, tpSource: null });
+    } else if (resume === "powerFirst") {
+      for (let p = 0; p < config.playerCount; p++) {
+        if ((r.scores[p] || 0) >= config.linesNeeded) {
+          const allScored = [];
+          for (let ri = 0; ri < b.length; ri++) for (let ci = 0; ci < b[ri].length; ci++) {
+            if (b[ri][ci]?.owner === p && b[ri][ci]?.scored) allScored.push([ri, ci]);
+          }
+          setWinner(p); setWinCells(allScored);
+          setScreen("review"); return;
+        }
+      }
+      setPwr(pwr => ({ ...pwr, firstDone: true }));
+    }
+  }, [config, teamsArr, afterFirstScoreEndTurn, cp, config?.timer]);
+
+  const continueLinePickRef = useRef(continueLinePick);
+  continueLinePickRef.current = continueLinePick;
+
+  useEffect(() => {
+    if (!pendingLinePick || !config?.ai) return;
+    if (!pendingLinePick.pending.playerIds.includes(1)) return;
+    const id = setTimeout(() => continueLinePickRef.current(0), 450);
+    return () => clearTimeout(id);
+  }, [pendingLinePick, config?.ai]);
 
   // Turn timer countdown — only depends on screen/cp/config to avoid restarts
-  const boardRef = useRef(board);
   const cooldownsRef = useRef(cooldowns);
   const endTurnRef = useRef(endTurn);
   const pwrRef = useRef(pwr);
-  const scoresRef = useRef(scores);
   const playerTurnsRef = useRef(playerTurns);
   const blocksRef = useRef(blocks);
-  boardRef.current = board;
   cooldownsRef.current = cooldowns;
   endTurnRef.current = endTurn;
   pwrRef.current = pwr;
-  scoresRef.current = scores;
   playerTurnsRef.current = playerTurns;
   blocksRef.current = blocks;
 
   useEffect(() => {
-    if (!config?.timer || screen !== "game") return;
+    if (!config?.timer || screen !== "game" || pendingLinePick) return;
     const id = setInterval(() => {
       setTimeLeft(t => {
         if (t <= 1) {
@@ -1918,7 +2040,7 @@ export default function MegaTicTacToe() {
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [screen, cp, config, toast]);
+  }, [screen, cp, config, toast, pendingLinePick]);
 
   // AI auto-play (handles normal tiles + powers)
   useEffect(() => {
@@ -1990,7 +2112,7 @@ export default function MegaTicTacToe() {
       // Double Place: 2nd tile every 3rd turn (same rule as for humans)
       const isDouble = isPow && power?.id === "doublePlace" && ((playerTurnsRef.current[1] || 0) + 1) % 3 === 0;
       if (isDouble && !curPwr.firstDone) {
-        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current, config.teams ? [[0,2],[1,3]] : null);
+        const s = flushScorePending(b, config.playerCount, config.lineLen, scoresRef.current, config.teams ? [[0, 2], [1, 3]] : null);
         setBoard(b); setScores(s);
         for (let p = 0; p < config.playerCount; p++) {
           if ((s[p] || 0) >= config.linesNeeded) {
@@ -2007,7 +2129,7 @@ export default function MegaTicTacToe() {
 
       // Takeover/Block/Ghost: place normal tile, queue step 2
       if (willUse) {
-        const s = scoreAndMark(b, config.playerCount, config.lineLen, scoresRef.current, config.teams ? [[0,2],[1,3]] : null);
+        const s = flushScorePending(b, config.playerCount, config.lineLen, scoresRef.current, config.teams ? [[0, 2], [1, 3]] : null);
         setBoard(b); setScores(s);
         for (let p = 0; p < config.playerCount; p++) {
           if ((s[p] || 0) >= config.linesNeeded) {
@@ -2038,6 +2160,7 @@ export default function MegaTicTacToe() {
     setCooldowns(snap.cooldowns); setPlayerTurns(snap.playerTurns);
     setLastMove(snap.lastMove); setWinCells([]); setWinner(null);
     setIsDraw(false); setPwr({ active: false, used: false, firstDone: false });
+    setPendingLinePick(null);
     setScreen("game"); setMsg(null);
     toast(`Undid ${PLAYERS[snap.undoPlayer].name}'s move`);
   }, [history, toast]);
@@ -2045,12 +2168,18 @@ export default function MegaTicTacToe() {
   const handleClick = useCallback((r, c) => {
     // Online mode: send move to server
     if (screen === "online-game") {
+      if (pendingLinePick) {
+        if (canPickLineSlot(pendingLinePick.pending, onlineSlot)) toast("Use the buttons to choose your line");
+        else toast("Waiting for line choice");
+        return;
+      }
       if (onlinePlayers.length < 2) { toast("Waiting for opponent"); return; }
       if (cp !== onlineSlot) { toast("Opponent's turn"); return; }
       if (onlineConnRef.current) onlineConnRef.current.move(r, c);
       return;
     }
     if (screen !== "game") return;
+    if (pendingLinePick) { toast("Choose which segment counts for your line"); return; }
     if (config.ai && cp === 1) return; // AI's turn, ignore clicks
     const cell = board[r][c];
     const isPow = config.mode === "powers";
@@ -2115,7 +2244,14 @@ export default function MegaTicTacToe() {
 
     // Double Place: 2nd tile every 3rd turn (turns 3, 6, 9, ... for this player)
     if (isPow && power?.id === "doublePlace" && ((playerTurns[cp] || 0) + 1) % 3 === 0 && !pwr.firstDone) {
-      const s = scoreAndMark(b, config.playerCount, config.lineLen, scores, config.teams ? [[0,2],[1,3]] : null);
+      const r = scoreAndMark(b, config.playerCount, config.lineLen, scores, teamsArr);
+      if (r.pending) {
+        setBoard(b);
+        setScores(r.scores);
+        setPendingLinePick({ pending: r.pending, resume: "doublePlace", extra: {} });
+        return;
+      }
+      const s = r.scores;
       setBoard(b); setScores(s);
       for (let p = 0; p < config.playerCount; p++) {
         if ((s[p] || 0) >= config.linesNeeded) {
@@ -2132,7 +2268,14 @@ export default function MegaTicTacToe() {
 
     // Takeover/Block/Teleport: normal tile placed, now prompt for special action
     if (pwr.active && !pwr.firstDone && (power?.id === "takeover" || power?.id === "block" || power?.id === "teleport")) {
-      const s = scoreAndMark(b, config.playerCount, config.lineLen, scores, config.teams ? [[0,2],[1,3]] : null);
+      const r = scoreAndMark(b, config.playerCount, config.lineLen, scores, teamsArr);
+      if (r.pending) {
+        setBoard(b);
+        setScores(r.scores);
+        setPendingLinePick({ pending: r.pending, resume: "powerFirst", extra: {} });
+        return;
+      }
+      const s = r.scores;
       setBoard(b); setScores(s);
       for (let p = 0; p < config.playerCount; p++) {
         if ((s[p] || 0) >= config.linesNeeded) {
@@ -2155,9 +2298,17 @@ export default function MegaTicTacToe() {
 
     setBoard(b);
     endTurn(b, { ...cooldowns });
-  }, [screen, board, blocks, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast]);
+  }, [screen, board, blocks, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast, pendingLinePick, teamsArr]);
 
   useEffect(() => { handleClickRef.current = handleClick; }, [handleClick]);
+
+  const pickLineOffset = useCallback((offset) => {
+    if (screen === "online-game") {
+      onlineConnRef.current?.lineOffset(offset);
+      return;
+    }
+    continueLinePick(offset);
+  }, [screen, continueLinePick]);
 
   const togglePower = useCallback(() => {
     if (screen === "online-game") {
@@ -2272,6 +2423,49 @@ export default function MegaTicTacToe() {
           </div>
         </div>
 
+        {!isReview && pendingLinePick && !(config.ai && pendingLinePick.pending.playerIds.includes(1)) && (
+          <div style={{ padding: "10px 16px", background: "var(--surfaceAlt)", borderBottom: "1px solid var(--borderLight)", animation: "slideUp 0.25s ease-out" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>
+              {(() => {
+                const canPick = isOnline
+                  ? (onlineSlot >= 0 && canPickLineSlot(pendingLinePick.pending, onlineSlot))
+                  : true;
+                return canPick
+                  ? `More than ${config.lineLen} in a row — pick which ${config.lineLen} tiles count`
+                  : "Waiting for opponent to choose which segment scores…";
+              })()}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {Array.from({ length: Math.max(0, pendingLinePick.pending.cells.length - config.lineLen + 1) }, (_, i) => {
+                const a = i + 1;
+                const b = i + config.lineLen;
+                const label = a === b ? `${a}` : `${a}–${b}`;
+                const canPick = isOnline
+                  ? (onlineSlot >= 0 && canPickLineSlot(pendingLinePick.pending, onlineSlot))
+                  : true;
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    disabled={!canPick}
+                    className="btn-hover"
+                    onClick={() => pickLineOffset(i)}
+                    style={{
+                      padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)",
+                      background: canPick ? "var(--card)" : "var(--surface)",
+                      fontSize: 13, fontWeight: 600, cursor: canPick ? "pointer" : "default",
+                      fontFamily: "inherit", color: "var(--text)",
+                      opacity: canPick ? 1 : 0.55,
+                    }}
+                  >
+                    Tiles {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Emote feed (floating, top-right) */}
         {isOnline && emoteFeed.length > 0 && (
           <div style={{ position: "fixed", top: 70, right: 12, zIndex: 50, display: "flex", flexDirection: "column", gap: 6, pointerEvents: "none" }}>
@@ -2348,10 +2542,12 @@ export default function MegaTicTacToe() {
           const dBoard = replaying ? history[replayIdx].board : board;
           const dLast = replaying ? history[replayIdx].lastMove : lastMove;
           const dWin = replaying ? [] : winCells;
+          const dLinePick = replaying || !pendingLinePick ? null : pendingLinePick.pending?.cells;
           return (
             <Board board={dBoard} onCellClick={handleClick} lastMove={dLast} lastMoves={replaying ? (dLast ? [dLast] : []) : lastMoves} winCells={dWin}
               currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={isOnline ? onlineSlot : cp}
-              blocks={replaying ? [] : blocks} globalTurn={globalTurn} tpSource={pwr.tpSource || null} cursor={cursor} />
+              blocks={replaying ? [] : blocks} globalTurn={globalTurn} tpSource={pwr.tpSource || null} cursor={cursor}
+              linePickCells={dLinePick} />
           );
         })()}
 
