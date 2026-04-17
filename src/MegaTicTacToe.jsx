@@ -2137,15 +2137,16 @@ export default function MegaTicTacToe() {
         const plan = aiPlanPowerAction(b, 1, power.id, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
         const ownTiles = b.flat().filter(cell => cell && cell.owner === 1 && !cell.wall && cell.visible !== false && !cell.scored).length;
         const minScore = {
-          easy: { takeover: 300, block: 260, teleport: 40 },
-          medium: { takeover: 200, block: 180, teleport: 24 },
-          hard: { takeover: 120, block: 110, teleport: 12 },
+          easy: { takeover: 220, block: 210, teleport: 34 },
+          medium: { takeover: 120, block: 110, teleport: 18 },
+          hard: { takeover: 70, block: 70, teleport: 8 },
         };
         const scoreReq = (minScore[diff] || minScore.medium)[power.id] ?? 180;
         const earlyTeleport = power.id === "teleport" && ownTiles < 3;
-        const teleportEarlyReq = 240;
+        const teleportEarlyReq = 300;
+        const urgentScore = power.id === "takeover" ? 8000 : 6000;
         if (plan && plan.action && plan.score >= scoreReq) {
-          if (!earlyTeleport || plan.score >= teleportEarlyReq) {
+          if (plan.score >= urgentScore || !earlyTeleport || plan.score >= teleportEarlyReq) {
             willUse = true;
           }
         }
