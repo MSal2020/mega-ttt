@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo, createContext, useContext } from "react";
 import {
   PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
-  revealGhosts, scoreAndMark, applyPendingLineScore, aiPickMove, aiPickMoveHard, aiPickPowerAction,
+  revealGhosts, scoreAndMark, applyPendingLineScore, aiPickMove, aiPickMoveHard, aiPickPowerAction, aiPlanPowerAction,
   canPickLineSlot,
   isBoardFull, getScoredCells, generateRoomCode,
   getBlockSize, getPowerCd, isBlocked, pruneBlocks,
@@ -2100,8 +2100,6 @@ export default function MegaTicTacToe() {
       const diff = config.aiDifficulty || "medium";
       const cd = cooldownsRef.current[1] || 0;
       const canUse = isPow && cd === 0 && !curPwr.used && power && power.id !== "doublePlace";
-      const powerUseChance = diff === "easy" ? 0.45 : diff === "hard" ? 0.92 : 0.7;
-      const willUse = canUse && Math.random() < powerUseChance;
 
       // Pick and place normal tile (step 1) — difficulty-aware wrapper
       let move;
@@ -2121,6 +2119,26 @@ export default function MegaTicTacToe() {
       const [r, c] = move;
       const b = cloneBoard(board);
       b[r][c] = { owner: 1, visible: true };
+
+      // Power usage is value-driven, not random; thresholds vary by difficulty.
+      let willUse = false;
+      if (canUse) {
+        const plan = aiPlanPowerAction(b, 1, power.id, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
+        const ownTiles = b.flat().filter(cell => cell && cell.owner === 1 && !cell.wall && cell.visible !== false && !cell.scored).length;
+        const minScore = {
+          easy: { takeover: 300, block: 260, teleport: 40 },
+          medium: { takeover: 200, block: 180, teleport: 24 },
+          hard: { takeover: 120, block: 110, teleport: 12 },
+        };
+        const scoreReq = (minScore[diff] || minScore.medium)[power.id] ?? 180;
+        const earlyTeleport = power.id === "teleport" && ownTiles < 3;
+        const teleportEarlyReq = 240;
+        if (plan && plan.action && plan.score >= scoreReq) {
+          if (!earlyTeleport || plan.score >= teleportEarlyReq) {
+            willUse = true;
+          }
+        }
+      }
       setLastMove([r, c]);
       setHistory(h => [...h, {
         board: cloneBoard(board),
