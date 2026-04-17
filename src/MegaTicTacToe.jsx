@@ -261,6 +261,11 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const [copied, setCopied] = useState(false);
   const [playerName, setPlayerName] = useState(() => localStorage.getItem("mtt-player-name") || "");
   const [awaitingStartAck, setAwaitingStartAck] = useState(false);
+  const awaitingStartAckRef = useRef(false);
+  const youRef = useRef(you);
+
+  useEffect(() => { awaitingStartAckRef.current = awaitingStartAck; }, [awaitingStartAck]);
+  useEffect(() => { youRef.current = you; }, [you]);
 
   // Config state (host only)
   const [mode, setMode] = useState("normal");
@@ -315,7 +320,8 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
         case "spectator-renamed":
           break;
         case "config-updated":
-          if (awaitingStartAck && you === 0) {
+          if (awaitingStartAckRef.current && youRef.current === 0) {
+            awaitingStartAckRef.current = false;
             setAwaitingStartAck(false);
             connection.start();
           }
@@ -323,9 +329,13 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
         case "game-started":
         case "move-applied":
         case "game-over":
+          awaitingStartAckRef.current = false;
+          setAwaitingStartAck(false);
           onGameStart(connection, msg);
           break;
         case "error":
+          awaitingStartAckRef.current = false;
+          setAwaitingStartAck(false);
           setError(msg.message);
           setTimeout(() => setError(null), 3000);
           break;
@@ -350,7 +360,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
 
     setConn(connection);
     return connection;
-  }, [onGameStart, playerName, awaitingStartAck, you]);
+  }, [onGameStart, playerName]);
 
   const createRoom = useCallback(() => {
     const code = generateRoomCode();
@@ -374,6 +384,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
       timer: timerEnabled ? timerSeconds : 0,
       ai: false,
     };
+    awaitingStartAckRef.current = true;
     setAwaitingStartAck(true);
     conn.setConfig(config);
   }, [conn, mode, gridSize, powers, wc, timerEnabled, timerSeconds, hasDupes]);

@@ -54,7 +54,6 @@ export default class MegaTTTServer {
       this.stopTimer();
       this.broadcast({ type: "opponent-disconnected" });
     }
-    this.publishListing();
     // Host migration: if host (slot 0) disconnects during lobby, promote
     // the lowest-slotted still-connected player to slot 0 so the room can proceed.
     if (this.phase === "lobby" && player.slot === 0) {
@@ -72,6 +71,13 @@ export default class MegaTTTServer {
         }
       }
     }
+
+    // If no seated players remain in lobby, close/reset room state immediately.
+    if (this.phase === "lobby" && this.activePlayerCount() === 0) {
+      this.reset();
+    }
+
+    this.publishListing();
   }
 
   onMessage(msg, conn) {
@@ -229,8 +235,9 @@ export default class MegaTTTServer {
     if (!parties?.lobby) return;
     const stub = parties.lobby.get("public");
     const host = this.players.find(p => p.slot === 0);
+    const hasSeatedPlayers = this.activePlayerCount() > 0;
     const payload = {
-      action: (this.config?.public && this.phase === "lobby") ? "set" : "remove",
+      action: (this.config?.public && this.phase === "lobby" && hasSeatedPlayers) ? "set" : "remove",
       code: this.room.id,
       hostName: host?.name || "Host",
       players: this.activePlayerCount(),
