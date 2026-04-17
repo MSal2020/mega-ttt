@@ -50,7 +50,7 @@ export default class MegaTTTServer {
     // Mark disconnected but keep slot reserved so they can reclaim on reconnect
     player.disconnected = true;
     this.broadcast({ type: "player-left", slot: player.slot, name: player.name });
-    if (this.phase === "playing") {
+    if (this.phase === "playing" && !player.spectator) {
       this.stopTimer();
       this.broadcast({ type: "opponent-disconnected" });
     }
@@ -58,7 +58,7 @@ export default class MegaTTTServer {
     // Host migration: if host (slot 0) disconnects during lobby, promote
     // the lowest-slotted still-connected player to slot 0 so the room can proceed.
     if (this.phase === "lobby" && player.slot === 0) {
-      const live = this.players.filter(p => !p.disconnected).sort((a, b) => a.slot - b.slot);
+      const live = this.players.filter(p => !p.disconnected && !p.spectator).sort((a, b) => a.slot - b.slot);
       if (live.length > 0) {
         const newHost = live[0];
         // Drop the disconnected host entirely (no reclaim) — lobby only
@@ -105,7 +105,11 @@ export default class MegaTTTServer {
     if (existing) {
       existing.disconnected = false;
       conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: existing.slot }));
-      this.broadcast({ type: "player-joined", slot: existing.slot, name: existing.name, playerCount: this.activePlayerCount() });
+      if (existing.spectator) {
+        this.broadcast({ type: "spectator-joined", name: existing.name });
+      } else {
+        this.broadcast({ type: "player-joined", slot: existing.slot, name: existing.name, playerCount: this.activePlayerCount() });
+      }
       return;
     }
     // Cap = host's chosen playerCount (defaults to 4 before config is set)
@@ -120,7 +124,7 @@ export default class MegaTTTServer {
       return;
     }
     // Take the lowest free slot (handles freed/reordered slots)
-    const takenSlots = new Set(this.players.filter(p => !p.disconnected).map(p => p.slot));
+    const takenSlots = new Set(this.players.filter(p => !p.disconnected && !p.spectator).map(p => p.slot));
     let slot = 0;
     while (takenSlots.has(slot)) slot++;
     const name = (data.name || `Player ${slot + 1}`).slice(0, 20);
@@ -139,17 +143,83 @@ export default class MegaTTTServer {
     const name = (data.name || "").slice(0, 20).trim();
     if (!name) return;
     player.name = name;
+    if (player.spectator) {
+      this.broadcast({ type: "spectator-renamed", name });
+      return;
+    }
     this.broadcast({ type: "player-joined", slot: player.slot, name, playerCount: this.activePlayerCount() });
   }
 
   activePlayerCount() {
-    return this.players.filter(p => !p.disconnected).length;
+    return this.players.filter(p => !p.disconnected && !p.spectator).length;
+  }
+
+  hasAllPlayersPresent() {
+    if (!this.config?.playerCount) return false;
+    return this.activePlayerCount() >= this.config.playerCount;
+  }
+
+  normalizeConfig(cfg) {
+    if (!cfg || typeof cfg !== "object") return null;
+
+    const mode = cfg.mode === "powers" ? "powers" : "normal";
+
+    const gridSizeNum = Number(cfg.gridSize);
+    if (!Number.isInteger(gridSizeNum) || gridSizeNum < 7 || gridSizeNum > 20) return null;
+
+    const playerCountNum = Number(cfg.playerCount);
+    if (!Number.isInteger(playerCountNum) || playerCountNum < 2 || playerCountNum > 4) return null;
+
+    const maxLineLen = Math.min(gridSizeNum, 8);
+    const lineLenNum = Number(cfg.lineLen);
+    if (!Number.isInteger(lineLenNum) || lineLenNum < 3 || lineLenNum > maxLineLen) return null;
+
+    const linesNeededNum = Number(cfg.linesNeeded);
+    if (!Number.isInteger(linesNeededNum) || linesNeededNum < 1 || linesNeededNum > 5) return null;
+
+    const powersIn = Array.isArray(cfg.powers) ? cfg.powers : [];
+    const powers = powersIn.slice(0, playerCountNum).map((p) => Number(p));
+    if (powers.length !== playerCountNum) return null;
+    if (powers.some((p) => !Number.isInteger(p) || p < 0 || p >= POWERS.length)) return null;
+    if (mode === "powers" && new Set(powers).size !== powers.length) return null;
+
+    const timerNum = Number(cfg.timer);
+    let timer = 0;
+    if (Number.isFinite(timerNum) && timerNum > 0) {
+      if (!Number.isInteger(timerNum) || timerNum < 5 || timerNum > 60) return null;
+      timer = timerNum;
+    }
+
+    const teams = !!cfg.teams && playerCountNum === 4;
+    const isPublic = !!cfg.public;
+
+    return {
+      mode,
+      gridSize: gridSizeNum,
+      playerCount: playerCountNum,
+      powers,
+      lineLen: lineLenNum,
+      linesNeeded: linesNeededNum,
+      timer,
+      ai: false,
+      teams,
+      public: isPublic,
+    };
   }
 
   handleConfig(conn, data) {
     if (this.getSlot(conn.id) !== 0) return; // only host
     if (this.phase !== "lobby") return;
-    this.config = data.config;
+    const normalized = this.normalizeConfig(data.config);
+    if (!normalized) {
+      conn.send(JSON.stringify({ type: "error", message: "Invalid game configuration" }));
+      return;
+    }
+    if (normalized.playerCount < this.activePlayerCount()) {
+      conn.send(JSON.stringify({ type: "error", message: "Player count can't be lower than seated players" }));
+      return;
+    }
+    this.config = normalized;
     this.broadcast({ type: "config-updated", config: this.config });
     this.publishListing();
   }
@@ -219,6 +289,10 @@ export default class MegaTTTServer {
 
   handleMove(conn, data) {
     if (this.phase !== "playing") return;
+    if (!this.hasAllPlayersPresent()) {
+      conn.send(JSON.stringify({ type: "error", message: "Waiting for all players to reconnect" }));
+      return;
+    }
     if (this.pendingLinePick) {
       conn.send(JSON.stringify({ type: "error", message: "Choose which line segment to score first" }));
       return;
@@ -335,6 +409,10 @@ export default class MegaTTTServer {
 
   handleLineOffset(conn, data) {
     if (this.phase !== "playing" || !this.pendingLinePick) return;
+    if (!this.hasAllPlayersPresent()) {
+      conn.send(JSON.stringify({ type: "error", message: "Waiting for all players to reconnect" }));
+      return;
+    }
     const slot = this.getSlot(conn.id);
     const { pending, resume } = this.pendingLinePick;
     if (!canPickLineSlot(pending, slot)) {
@@ -389,9 +467,20 @@ export default class MegaTTTServer {
 
   handlePowerToggle(conn) {
     if (this.phase !== "playing") return;
+    if (!this.hasAllPlayersPresent()) {
+      conn.send(JSON.stringify({ type: "error", message: "Waiting for all players to reconnect" }));
+      return;
+    }
     if (this.pendingLinePick) return;
     const slot = this.getSlot(conn.id);
     if (slot !== this.cp) return;
+    if (this.config?.mode !== "powers") return;
+    const power = POWERS[this.config.powers[this.cp]];
+    if (!power || power.id === "doublePlace") return;
+    if ((this.cooldowns[this.cp] || 0) > 0) {
+      conn.send(JSON.stringify({ type: "error", message: "Power is on cooldown" }));
+      return;
+    }
 
     if (this.pwr.active && !this.pwr.firstDone) {
       this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
@@ -553,6 +642,13 @@ export default class MegaTTTServer {
   }
 
   getState() {
+    const seatedPlayers = this.players
+      .filter(p => !p.spectator && !p.disconnected)
+      .map(p => ({ slot: p.slot, name: p.name }));
+    const spectators = this.players
+      .filter(p => p.spectator && !p.disconnected)
+      .map(p => ({ name: p.name }));
+
     return {
       phase: this.phase,
       config: this.config,
@@ -571,7 +667,8 @@ export default class MegaTTTServer {
       blocks: this.blocks,
       timeLeft: this.timeLeft,
       pendingLinePick: this.pendingLinePick,
-      players: this.players.map(p => ({ slot: p.slot, name: p.name })),
+      players: seatedPlayers,
+      spectators,
     };
   }
 

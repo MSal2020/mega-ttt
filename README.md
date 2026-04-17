@@ -36,7 +36,7 @@ Win conditions auto-adjust based on grid size and player count to keep game leng
 | 10×10 – 14×14 | 5 in a row | 2                         | 1                        |
 | 15×15 – 20×20 | 5 in a row | 3                         | 2                        |
 
-These are the current defaults. Players can override line length and lines-to-win in advanced settings (planned).
+These are the current defaults. Players can override line length and lines-to-win in advanced settings.
 
 ## Powers System
 
@@ -45,38 +45,37 @@ All powers follow the same template: **place your normal tile + do your special 
 ### The Four Launch Powers
 
 **Double Place** (◇)
-- Every other turn, place 2 tiles instead of 1
+- Every 3rd turn, place 2 tiles instead of 1
 - No cooldown
 - Consistent, reliable board presence
 - *Weakness: both tiles are visible, easy to read*
 
 **Takeover** (△)
 - Place your tile normally, then steal one opponent's tile
-- 3-turn cooldown
+- Cooldown scales with grid size (2-4 turns)
 - High-impact burst that disrupts opponent lines
-- *Cannot steal Ghost tiles until they're revealed*
-- *Weakness: timing-dependent, weak against hidden tiles*
+- *Cannot steal scored tiles*
+- *Weakness: timing-dependent, weaker if opponents spread out*
 
 **Block** (□)
-- Place your tile normally, then drop a permanent wall on any empty cell
-- 3-turn cooldown
-- Pure disruption — walls can't be removed or stolen
-- *Weakness: walls don't advance your own lines*
+- Place your tile normally, then choose a denial area where no one can place
+- Block area scales with line length (2x2 to 4x4)
+- 2-turn cooldown
+- *Weakness: denial is temporary and doesn't score directly*
 
-**Ghost** (○)
-- Place your tile normally, then place a hidden tile
-- Hidden tiles reveal after 2 turns
-- Only 1 ghost tile can be active at a time
-- Opponents see *something* is there but not who owns it
-- *Weakness: delayed impact, vulnerable to walls placed nearby*
+**Teleport** (◎)
+- Place your tile normally, then move one of your existing tiles to an empty cell
+- 3-turn cooldown
+- Great for converting near-lines or escaping dead positions
+- *Weakness: costs tempo if you move a tile away from a strong lane*
 
 ### Counter-Play (Soft Rock-Paper-Scissors)
 
 ```
-Double Place → beats → Ghost (raw speed vs slow reveals)
-Ghost        → beats → Takeover (can't steal what you can't see)
-Takeover     → beats → Block (steal the tile they protected)
-Block        → beats → Double Place (wall off predictable lines)
+Double Place → pressures → Teleport (raw board presence can outpace repositioning)
+Teleport     → outplays → Block (jump around denial zones)
+Block        → disrupts → Double Place (limit where follow-up tiles can go)
+Takeover     → punishes → greedy lines (steals key unscored anchors)
 ```
 
 ### Adding New Powers
@@ -87,10 +86,10 @@ New powers follow the same template: `normal tile + special action + cooldown`. 
 
 The game is designed mobile-first with larger grids requiring zoom and scroll:
 
-- **Pinch-to-zoom** — planned for touch devices
+- **Pinch-to-zoom** — implemented on touch devices
 - **+/− zoom buttons** — current implementation for adjusting cell size
 - **Auto-scroll** — board auto-centers on the last move
-- **Minimap** — planned corner overlay when zoomed in
+- **Minimap** — corner overlay appears when zoomed/overflowing
 - **Double-tap snap zoom** — planned for quick quadrant navigation
 
 ## Architecture
@@ -99,7 +98,7 @@ The game is designed mobile-first with larger grids requiring zoom and scroll:
 src/
 ├── main.jsx              # React entry point
 ├── App.jsx               # App wrapper
-└── MegaTicTacToe.jsx     # Full game (single-file for now)
+└── MegaTicTacToe.jsx     # Main game UI and flow
 ```
 
 ### Key Functions
@@ -108,8 +107,10 @@ src/
 |----------|---------|
 | `makeBoard(n)` | Creates an n×n grid of null cells |
 | `findLines(board, playerId, length)` | Finds all completed lines for a player |
-| `revealGhosts(board, turnCount)` | Reveals ghost tiles that have aged 2+ turns |
-| `calcScores(board, playerCount, lineLen)` | Recalculates line counts for all players |
+| `isBlocked(blocks, r, c, globalTurn)` | Checks whether a cell is inside an active block area |
+| `pruneBlocks(blocks, globalTurn)` | Removes expired block areas |
+| `scoreAndMark(board, playerCount, lineLen, prevScores)` | Finds scorable lines and updates scores/marks |
+| `applyPendingLineScore(board, playerCount, lineLen, pending, offset, prevScores)` | Applies chosen segment on overlong lines |
 | `getWinConditions(gridSize, playerCount)` | Returns auto-scaled win conditions |
 
 ### Cell Data Shape
@@ -117,8 +118,7 @@ src/
 ```js
 null                                    // empty
 { owner: 0, visible: true }            // normal tile
-{ wall: true }                          // wall (from Block power)
-{ owner: 1, visible: false, placedTurn: 5 }  // ghost tile
+// Block power uses a separate `blocks` array for temporary denial zones
 ```
 
 ### Game State
@@ -128,7 +128,7 @@ null                                    // empty
 | `board` | 2D array of cells |
 | `cp` | Current player index (0-3) |
 | `turn` | Round number (increments when all players have gone) |
-| `globalTurn` | Total individual turns taken (used for ghost reveal timing) |
+| `globalTurn` | Total individual turns taken (used for block expiry timing) |
 | `scores` | Object mapping player index → completed line count |
 | `cooldowns` | Object mapping player index → remaining cooldown turns |
 | `pwr` | Power state: `{ active, used, firstDone }` |

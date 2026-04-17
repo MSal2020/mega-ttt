@@ -17,6 +17,7 @@ export function createConnection(roomCode, onMessage) {
   });
 
   let lastName = null;
+  let openedOnce = false;
 
   ws.addEventListener("message", (e) => {
     try {
@@ -27,7 +28,8 @@ export function createConnection(roomCode, onMessage) {
 
   // Re-send join on every (re)connect so server can restore slot
   ws.addEventListener("open", () => {
-    if (lastName) ws.send(JSON.stringify({ type: "join", name: lastName }));
+    if (openedOnce && lastName) ws.send(JSON.stringify({ type: "join", name: lastName }));
+    openedOnce = true;
   });
 
   const send = (msg) => {

@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo, createContext, useContext } from "react";
 import {
   PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
-  revealGhosts, scoreAndMark, applyPendingLineScore, aiPickMove, aiPickPowerAction,
+  revealGhosts, scoreAndMark, applyPendingLineScore, aiPickMove, aiPickMoveHard, aiPickPowerAction,
   canPickLineSlot,
   isBoardFull, getScoredCells, generateRoomCode,
   getBlockSize, getPowerCd, isBlocked, pruneBlocks,
@@ -260,6 +260,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const [status, setStatus] = useState("connecting");
   const [copied, setCopied] = useState(false);
   const [playerName, setPlayerName] = useState(() => localStorage.getItem("mtt-player-name") || "");
+  const [awaitingStartAck, setAwaitingStartAck] = useState(false);
 
   // Config state (host only)
   const [mode, setMode] = useState("normal");
@@ -298,15 +299,26 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
           break;
         case "player-joined":
           setPlayers(prev => {
-            const existing = prev.find(p => p.slot === msg.slot);
-            if (existing) return prev;
+            const idx = prev.findIndex(p => p.slot === msg.slot);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = { ...next[idx], name: msg.name };
+              return next;
+            }
             return [...prev, { slot: msg.slot, name: msg.name }];
           });
           break;
         case "player-left":
           setPlayers(prev => prev.filter(p => p.slot !== msg.slot));
           break;
+        case "spectator-joined":
+        case "spectator-renamed":
+          break;
         case "config-updated":
+          if (awaitingStartAck && you === 0) {
+            setAwaitingStartAck(false);
+            connection.start();
+          }
           break;
         case "game-started":
         case "move-applied":
@@ -321,9 +333,11 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
       }
     });
 
+    // Join once immediately; PartySocket queues this until the socket opens.
+    const name = (playerName || "").trim() || (isHost ? "Host" : "Guest");
+    connection.join(name);
+
     connection.ws.addEventListener("open", () => {
-      const name = (playerName || "").trim() || (isHost ? "Host" : "Guest");
-      connection.join(name);
       setStatus("connected");
     });
     connection.ws.addEventListener("error", () => {
@@ -336,7 +350,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
 
     setConn(connection);
     return connection;
-  }, [onGameStart]);
+  }, [onGameStart, playerName, awaitingStartAck, you]);
 
   const createRoom = useCallback(() => {
     const code = generateRoomCode();
@@ -360,8 +374,8 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
       timer: timerEnabled ? timerSeconds : 0,
       ai: false,
     };
+    setAwaitingStartAck(true);
     conn.setConfig(config);
-    setTimeout(() => conn.start(), 100);
   }, [conn, mode, gridSize, powers, wc, timerEnabled, timerSeconds, hasDupes]);
 
   const copyCode = useCallback(() => {
@@ -410,7 +424,8 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   // Explicit "Back" button handles closing.
 
   const isHost = you === 0;
-  const opponentJoined = players.length >= playerCount;
+  const seatedPlayers = players.filter(p => p.slot >= 0);
+  const opponentJoined = seatedPlayers.length >= playerCount;
 
   // Push config to server when host changes settings (so the join cap matches)
   useEffect(() => {
@@ -660,7 +675,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                   <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                     {[2, 3, 4].map(n => {
                       // Can't shrink below currently-joined count
-                      const disabled = n < players.length;
+                      const disabled = n < seatedPlayers.length;
                       return (
                         <button key={n} disabled={disabled} onClick={() => setPlayerCount(n)} style={{
                           width: 44, height: 44, borderRadius: 10, fontSize: 16, fontWeight: 600,
@@ -814,10 +829,10 @@ function Tutorial({ onClose }) {
   const [step, setStep] = useState(0);
   const steps = [
     { title: "Welcome to Mega Tic Tac Toe", body: "Classic 3-in-a-row, reimagined on a huge grid. Play locally, vs AI, or online with friends." },
-    { title: "Big Grids", body: "Grids go up to 16×16. You need to complete multiple lines (e.g. 5 lines of 5) to win — so every move matters across the whole board." },
+    { title: "Big Grids", body: "Grids go up to 20×20. You need to complete multiple lines (e.g. 5 lines of 5) to win — so every move matters across the whole board." },
     { title: "Scoring", body: "Each completed line counts toward your target. Scored cells stay on the board but can't be reused. Race your opponent to hit the line count first." },
-    { title: "Powers Mode", body: "Optional mode where each player picks a power: Takeover (steal a tile), Block (place a wall), Ghost (hidden tile), Double Place (two tiles per turn). Powers have cooldowns." },
-    { title: "You're Ready", body: "Try a small 6×6 grid first, then scale up. Have fun!" },
+    { title: "Powers Mode", body: "Optional mode where each player picks a power: Takeover (steal a tile), Block (temporary denial area), Teleport (move one tile), Double Place (two tiles every 3rd turn). Powers have cooldowns." },
+    { title: "You're Ready", body: "Try a small 7×7 grid first, then scale up. Have fun!" },
   ];
   const s = steps[step];
   const last = step === steps.length - 1;
@@ -1770,7 +1785,9 @@ export default function MegaTicTacToe() {
       }
       if (msg.type === "player-joined") {
         setOnlinePlayers(prev => {
-          if (prev.find(p => p.slot === msg.slot)) return prev;
+          if (prev.find(p => p.slot === msg.slot)) {
+            return prev.map(p => p.slot === msg.slot ? { ...p, name: msg.name } : p);
+          }
           return [...prev, { slot: msg.slot, name: msg.name }];
         });
         toast(`${msg.name} joined`);
@@ -2080,13 +2097,13 @@ export default function MegaTicTacToe() {
       }
 
       // Decide to use power this turn
+      const diff = config.aiDifficulty || "medium";
       const cd = cooldownsRef.current[1] || 0;
       const canUse = isPow && cd === 0 && !curPwr.used && power && power.id !== "doublePlace";
-      // Use power ~70% of the time when available
-      const willUse = canUse && Math.random() < 0.7;
+      const powerUseChance = diff === "easy" ? 0.45 : diff === "hard" ? 0.92 : 0.7;
+      const willUse = canUse && Math.random() < powerUseChance;
 
       // Pick and place normal tile (step 1) — difficulty-aware wrapper
-      const diff = config.aiDifficulty || "medium";
       let move;
       if (diff === "easy" && Math.random() < 0.55) {
         // Easy: often pick a random empty non-blocked cell
@@ -2095,6 +2112,8 @@ export default function MegaTicTacToe() {
           if (!board[r][c] && !isBlocked(blocksRef.current, r, c, globalTurn)) empties.push([r, c]);
         }
         move = empties.length ? empties[Math.floor(Math.random() * empties.length)] : null;
+      } else if (diff === "hard") {
+        move = aiPickMoveHard(board, 1, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
       } else {
         move = aiPickMove(board, 1, config.lineLen, config.playerCount, blocksRef.current, globalTurn);
       }
@@ -2127,7 +2146,7 @@ export default function MegaTicTacToe() {
         return;
       }
 
-      // Takeover/Block/Ghost: place normal tile, queue step 2
+      // Takeover/Block/Teleport: place normal tile, queue step 2
       if (willUse) {
         const s = flushScorePending(b, config.playerCount, config.lineLen, scoresRef.current, config.teams ? [[0, 2], [1, 3]] : null);
         setBoard(b); setScores(s);
@@ -2173,7 +2192,8 @@ export default function MegaTicTacToe() {
         else toast("Waiting for line choice");
         return;
       }
-      if (onlinePlayers.length < 2) { toast("Waiting for opponent"); return; }
+      const requiredPlayers = config?.playerCount || 2;
+      if (onlinePlayers.length < requiredPlayers) { toast("Waiting for players"); return; }
       if (cp !== onlineSlot) { toast("Opponent's turn"); return; }
       if (onlineConnRef.current) onlineConnRef.current.move(r, c);
       return;
