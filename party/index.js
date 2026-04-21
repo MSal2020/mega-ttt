@@ -236,13 +236,15 @@ export default class MegaTTTServer {
   }
 
   async publishListing() {
+    const hasSeatedPlayers = this.activePlayerCount() > 0;
+    const shouldList = !!(this.config?.public && this.phase === "lobby" && hasSeatedPlayers);
+    this.syncListingHeartbeat(shouldList);
     const parties = this.room.context?.parties || this.room.parties;
     if (!parties?.lobby) return;
     const stub = parties.lobby.get("public");
     const host = this.players.find(p => p.slot === 0);
-    const hasSeatedPlayers = this.activePlayerCount() > 0;
     const payload = {
-      action: (this.config?.public && this.phase === "lobby" && hasSeatedPlayers) ? "set" : "remove",
+      action: shouldList ? "set" : "remove",
       code: this.room.id,
       hostName: host?.name || "Host",
       players: this.activePlayerCount(),
@@ -258,7 +260,6 @@ export default class MegaTTTServer {
         body: JSON.stringify(payload),
       });
     } catch {}
-    this.syncListingHeartbeat(payload.action === "set");
   }
 
   syncListingHeartbeat(shouldHeartbeat) {
@@ -273,7 +274,7 @@ export default class MegaTTTServer {
     // Keep lobbies discoverable across lobby worker cold starts.
     this.listingInterval = setInterval(() => {
       this.publishListing();
-    }, 15_000);
+    }, 5_000);
   }
 
   handleStart(conn) {
