@@ -17,6 +17,10 @@ export default class MegaTTTServer {
   }
 
   reset() {
+    if (this.listingInterval) {
+      clearInterval(this.listingInterval);
+      this.listingInterval = null;
+    }
     this.players = [];       // [{ id, name, slot }]
     this.phase = "lobby";    // lobby | playing | review
     this.rematchVotes = new Set(); // slots that have voted for rematch
@@ -154,6 +158,7 @@ export default class MegaTTTServer {
       return;
     }
     this.broadcast({ type: "player-joined", slot: player.slot, name, playerCount: this.activePlayerCount() });
+    if (player.slot === 0) this.publishListing();
   }
 
   activePlayerCount() {
@@ -253,6 +258,22 @@ export default class MegaTTTServer {
         body: JSON.stringify(payload),
       });
     } catch {}
+    this.syncListingHeartbeat(payload.action === "set");
+  }
+
+  syncListingHeartbeat(shouldHeartbeat) {
+    if (!shouldHeartbeat) {
+      if (this.listingInterval) {
+        clearInterval(this.listingInterval);
+        this.listingInterval = null;
+      }
+      return;
+    }
+    if (this.listingInterval) return;
+    // Keep lobbies discoverable across lobby worker cold starts.
+    this.listingInterval = setInterval(() => {
+      this.publishListing();
+    }, 15_000);
   }
 
   handleStart(conn) {

@@ -9,12 +9,20 @@ export default class Lobby {
     this.rooms = new Map(); // code -> { code, hostName, players, playerCount, gridSize, mode, updatedAt }
   }
 
+  pruneStaleRooms() {
+    const now = Date.now();
+    for (const [k, v] of this.rooms) {
+      if (now - v.updatedAt > 60_000) this.rooms.delete(k);
+    }
+  }
+
   // HTTP from game rooms (server-to-server within PartyKit)
   async onRequest(req) {
     if (req.method !== "POST") return new Response("ok");
     let data;
     try { data = await req.json(); } catch { return new Response("bad json", { status: 400 }); }
-    const { action, code } = data;
+    const { action } = data;
+    const code = String(data.code || "").toUpperCase();
     if (!code || typeof code !== "string") return new Response("missing code", { status: 400 });
 
     if (action === "remove") {
@@ -32,20 +40,18 @@ export default class Lobby {
         updatedAt: Date.now(),
       });
     }
-    // Evict rooms not updated in 60s (stale)
-    const now = Date.now();
-    for (const [k, v] of this.rooms) {
-      if (now - v.updatedAt > 60_000) this.rooms.delete(k);
-    }
+    this.pruneStaleRooms();
     this.broadcastList();
     return new Response("ok");
   }
 
   onConnect(conn) {
+    this.pruneStaleRooms();
     conn.send(JSON.stringify({ type: "rooms", rooms: [...this.rooms.values()] }));
   }
 
   broadcastList() {
+    this.pruneStaleRooms();
     const msg = JSON.stringify({ type: "rooms", rooms: [...this.rooms.values()] });
     for (const c of this.room.getConnections()) c.send(msg);
   }

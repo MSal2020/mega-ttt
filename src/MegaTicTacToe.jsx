@@ -383,11 +383,12 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
       ...wc,
       timer: timerEnabled ? timerSeconds : 0,
       ai: false,
+      public: isPublic,
     };
     awaitingStartAckRef.current = true;
     setAwaitingStartAck(true);
     conn.setConfig(config);
-  }, [conn, mode, gridSize, powers, wc, timerEnabled, timerSeconds, hasDupes]);
+  }, [conn, mode, gridSize, powers, wc, timerEnabled, timerSeconds, hasDupes, isPublic]);
 
   const copyCode = useCallback(() => {
     navigator.clipboard.writeText(roomCode).then(() => {
