@@ -460,11 +460,19 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
     return () => sub.close();
   }, [tab]);
 
+  const leaveLobby = useCallback(() => {
+    if (conn) {
+      conn.close();
+      setConn(null);
+    }
+    onBack();
+  }, [conn, onBack]);
+
   return (
     <div style={{ minHeight: "100dvh", background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none", transition: "background 0.3s" }}>
       <div style={{ background: t.card, borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: t.cardShadow, animation: "slideUp 0.4s cubic-bezier(0.16,1,0.3,1)", transition: "background 0.3s, box-shadow 0.3s" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <button className="btn-hover" onClick={onBack} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: t.textLabel }}>←</button>
+          <button className="btn-hover" onClick={leaveLobby} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: t.textLabel }}>←</button>
           <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.5px", textAlign: "center", color: t.text, flex: 1 }}>Play Online</h1>
           <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, opacity: 0.6 }}>{dark ? "☀" : "☾"}</button>
         </div>

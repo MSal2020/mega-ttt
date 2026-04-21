@@ -28,8 +28,22 @@
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
+      // Avoid stale-cache blank screens in local dev (especially Safari):
+      // register SW only in production builds, and actively unregister in dev.
+      const isDevHost = location.hostname === "localhost" || location.hostname === "127.0.0.1";
       if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+        if (isDevHost) {
+          navigator.serviceWorker.getRegistrations().then((regs) => {
+            for (const reg of regs) reg.unregister();
+          });
+          if ("caches" in window) {
+            caches.keys().then((keys) => {
+              for (const key of keys) caches.delete(key);
+            });
+          }
+        } else {
+          window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+        }
       }
     </script>
   </body>

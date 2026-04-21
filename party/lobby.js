@@ -12,7 +12,10 @@ export default class Lobby {
   pruneStaleRooms() {
     const now = Date.now();
     for (const [k, v] of this.rooms) {
-      if (now - v.updatedAt > 60_000) this.rooms.delete(k);
+      const ageMs = now - (v.updatedAt || 0);
+      const players = Number(v.players || 0);
+      // Drop ghost listings aggressively: they should never be visible at 0/N.
+      if (players < 1 || ageMs > 20_000) this.rooms.delete(k);
     }
   }
 
@@ -29,16 +32,21 @@ export default class Lobby {
       this.rooms.delete(code);
     } else {
       // register / update
-      this.rooms.set(code, {
+      const players = Number(data.players || 0);
+      if (players < 1) {
+        this.rooms.delete(code);
+      } else {
+        this.rooms.set(code, {
         code,
         hostName: (data.hostName || "").slice(0, 20),
-        players: data.players || 0,
+        players,
         playerCount: data.playerCount || 2,
         gridSize: data.gridSize || 12,
         mode: data.mode || "normal",
         teams: !!data.teams,
         updatedAt: Date.now(),
       });
+      }
     }
     this.pruneStaleRooms();
     this.broadcastList();

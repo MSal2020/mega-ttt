@@ -81,7 +81,7 @@ export default class MegaTTTServer {
       this.reset();
     }
 
-    this.publishListing();
+    this.publishListing("on-close");
   }
 
   onMessage(msg, conn) {
@@ -144,7 +144,7 @@ export default class MegaTTTServer {
 
     conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: slot }));
     this.broadcast({ type: "player-joined", slot, name, playerCount: this.activePlayerCount() });
-    this.publishListing();
+    this.publishListing("join");
   }
 
   handleRename(conn, data) {
@@ -158,7 +158,7 @@ export default class MegaTTTServer {
       return;
     }
     this.broadcast({ type: "player-joined", slot: player.slot, name, playerCount: this.activePlayerCount() });
-    if (player.slot === 0) this.publishListing();
+    if (player.slot === 0) this.publishListing("host-rename");
   }
 
   activePlayerCount() {
@@ -232,10 +232,10 @@ export default class MegaTTTServer {
     }
     this.config = normalized;
     this.broadcast({ type: "config-updated", config: this.config });
-    this.publishListing();
+    this.publishListing("config");
   }
 
-  async publishListing() {
+  async publishListing(source = "unknown") {
     const hasSeatedPlayers = this.activePlayerCount() > 0;
     const shouldList = !!(this.config?.public && this.phase === "lobby" && hasSeatedPlayers);
     this.syncListingHeartbeat(shouldList);
@@ -273,7 +273,7 @@ export default class MegaTTTServer {
     if (this.listingInterval) return;
     // Keep lobbies discoverable across lobby worker cold starts.
     this.listingInterval = setInterval(() => {
-      this.publishListing();
+      this.publishListing("heartbeat");
     }, 5_000);
   }
 
@@ -291,7 +291,7 @@ export default class MegaTTTServer {
 
     // Initialize game
     this.phase = "playing";
-    this.publishListing(); // remove from public list — no longer joinable as lobby
+    this.publishListing("start-game"); // remove from public list — no longer joinable as lobby
     this.board = makeBoard(this.config.gridSize);
     this.cp = 0;
     this.turn = 1;

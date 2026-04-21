@@ -1,9 +1,19 @@
 import PartySocket from "partysocket";
 
-const PARTYKIT_HOST = import.meta.env.VITE_PARTYKIT_HOST || "localhost:1999";
+function resolvePartykitHost() {
+  const configured = import.meta.env.VITE_PARTYKIT_HOST;
+  const hostname = window.location.hostname;
+  const isLocalUi = hostname === "localhost" || hostname === "127.0.0.1";
+  // In local UI sessions, default to local PartyKit to avoid accidentally
+  // talking to production when shell env still exports VITE_PARTYKIT_HOST.
+  if (isLocalUi) return "localhost:1999";
+  return configured || "localhost:1999";
+}
+
+const PARTYKIT_HOST = resolvePartykitHost();
 
 export function createConnection(roomCode, onMessage) {
-  console.log("[multiplayer] connecting to", PARTYKIT_HOST, "room:", roomCode.toUpperCase());
+  const room = roomCode.toUpperCase();
   // Stable client ID so server can reclaim slot on reconnect
   let clientId = sessionStorage.getItem("mtt-client-id");
   if (!clientId) {
@@ -12,7 +22,7 @@ export function createConnection(roomCode, onMessage) {
   }
   const ws = new PartySocket({
     host: PARTYKIT_HOST,
-    room: roomCode.toUpperCase(),
+    room,
     id: clientId,
   });
 
