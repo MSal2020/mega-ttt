@@ -15,10 +15,10 @@ const PARTYKIT_HOST = resolvePartykitHost();
 export function createConnection(roomCode, onMessage) {
   const room = roomCode.toUpperCase();
   // Stable client ID so server can reclaim slot on reconnect
-  let clientId = sessionStorage.getItem("mtt-client-id");
+  let clientId = localStorage.getItem("mtt-client-id");
   if (!clientId) {
     clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    sessionStorage.setItem("mtt-client-id", clientId);
+    localStorage.setItem("mtt-client-id", clientId);
   }
   const ws = new PartySocket({
     host: PARTYKIT_HOST,
@@ -62,18 +62,22 @@ export function createConnection(roomCode, onMessage) {
     powerToggle() { return send({ type: "power-toggle" }); },
     rematch() { return send({ type: "rematch" }); },
     emote(emote) { return send({ type: "emote", emote }); },
+    forfeit() { return send({ type: "forfeit" }); },
     close() { ws.close(); },
   };
 }
 
 // Subscribe to the public-rooms list from the lobby party.
 // onRooms(list) is called on every update.
-export function subscribeToLobby(onRooms) {
+export function subscribeToLobby(arg) {
+  const onRooms = typeof arg === "function" ? arg : arg?.onRooms;
+  const onDebug = typeof arg === "function" ? null : arg?.onDebug;
   const ws = new PartySocket({ host: PARTYKIT_HOST, party: "lobby", room: "public" });
   ws.addEventListener("message", (e) => {
     try {
       const data = JSON.parse(e.data);
       if (data.type === "rooms") onRooms(data.rooms || []);
+      if (data.type === "lobby-debug" && onDebug) onDebug(data);
     } catch {}
   });
   return { ws, close() { ws.close(); } };

@@ -5,6 +5,9 @@ import {
   canPickLineSlot,
 } from "../lib/gameLogic.js";
 
+const LISTING_HEARTBEAT_MS = 5_000;
+const GRACE_MS = 10_000;
+
 /**
  * PartyKit server for Mega Tic Tac Toe online multiplayer.
  * Each room = one game session identified by a 4-char code.
@@ -41,9 +44,22 @@ export default class MegaTTTServer {
     this.timerInterval = null;
     this.timeLeft = 0;
     this.pendingLinePick = null; // { pending, resume, extra? }
+    for (const timer of (this.graceTimers || new Map()).values()) clearTimeout(timer);
+    this.graceTimers = new Map();
   }
 
   onConnect(conn) {
+    // Cancel grace timer if reconnecting
+    const timer = this.graceTimers.get(conn.id);
+    if (timer) {
+      clearTimeout(timer);
+      this.graceTimers.delete(conn.id);
+      const player = this.players.find(p => p.id === conn.id);
+      if (player) {
+        player.disconnected = false;
+        player.forfeited = false;
+      }
+    }
     // Send current full state on connect/reconnect
     conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: this.getSlot(conn.id) }));
   }
@@ -51,12 +67,20 @@ export default class MegaTTTServer {
   onClose(conn) {
     const player = this.players.find(p => p.id === conn.id);
     if (!player) return;
+    if (player.spectator) {
+      // Remove spectator immediately — no reclaim needed
+      this.players = this.players.filter(p => p.id !== conn.id);
+      this.publishListing("on-close");
+      return;
+    }
     // Mark disconnected but keep slot reserved so they can reclaim on reconnect
     player.disconnected = true;
     this.broadcast({ type: "player-left", slot: player.slot, name: player.name });
-    if (this.phase === "playing" && !player.spectator) {
-      this.stopTimer();
-      this.broadcast({ type: "opponent-disconnected" });
+    if (this.phase === "playing") {
+      // Grace period: don't stop the game immediately
+      const timer = setTimeout(() => this.finalizeDisconnect(conn.id), GRACE_MS);
+      this.graceTimers.set(conn.id, timer);
+      this.broadcast({ type: "player-grace", slot: player.slot, name: player.name, graceUntil: Date.now() + GRACE_MS });
     }
     // Host migration: if host (slot 0) disconnects during lobby, promote
     // the lowest-slotted still-connected player to slot 0 so the room can proceed.
@@ -76,12 +100,18 @@ export default class MegaTTTServer {
       }
     }
 
+    this.publishListing("on-close");
+
     // If no seated players remain in lobby, close/reset room state immediately.
     if (this.phase === "lobby" && this.activePlayerCount() === 0) {
       this.reset();
+      return;
     }
 
-    this.publishListing("on-close");
+    // If literally no one is connected anymore, reset so the room code can be reused fresh.
+    if ([...this.room.getConnections()].length === 0) {
+      this.reset();
+    }
   }
 
   onMessage(msg, conn) {
@@ -98,6 +128,7 @@ export default class MegaTTTServer {
       case "power-toggle": return this.handlePowerToggle(conn);
       case "rematch": return this.handleRematch(conn);
       case "emote": return this.handleEmote(conn, data);
+      case "forfeit": return this.handleForfeit(conn);
       default: break;
     }
   }
@@ -106,7 +137,7 @@ export default class MegaTTTServer {
     const player = this.players.find(p => p.id === conn.id);
     if (!player) return;
     if (!data.emote || typeof data.emote !== "string" || data.emote.length > 16) return;
-    this.broadcast({ type: "emote", slot: player.slot, name: player.name, emote: data.emote, at: Date.now() });
+    this.broadcast({ type: "emote", slot: player.spectator ? -1 : player.slot, name: player.name, emote: data.emote, at: Date.now() });
   }
 
   handleJoin(conn, data) {
@@ -114,6 +145,9 @@ export default class MegaTTTServer {
     const existing = this.players.find(p => p.id === conn.id);
     if (existing) {
       existing.disconnected = false;
+      existing.forfeited = false;
+      const timer = this.graceTimers.get(conn.id);
+      if (timer) { clearTimeout(timer); this.graceTimers.delete(conn.id); }
       conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: existing.slot }));
       if (existing.spectator) {
         this.broadcast({ type: "spectator-joined", name: existing.name });
@@ -122,24 +156,30 @@ export default class MegaTTTServer {
       }
       return;
     }
-    // Cap = host's chosen playerCount (defaults to 4 before config is set)
-    const cap = this.config?.playerCount || 4;
-    const activeCount = this.players.filter(p => !p.disconnected && !p.spectator).length;
-    if (activeCount >= cap) {
-      // Join as spectator — receives state but cannot play
+    // During an active game or review, new joiners can only spectate (no slot stealing)
+    if (this.phase === "playing" || this.phase === "review") {
       const name = (data.name || "Spectator").slice(0, 20);
       this.players.push({ id: conn.id, name, slot: -1, disconnected: false, spectator: true });
       conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: -1, spectator: true }));
       this.broadcast({ type: "spectator-joined", name });
       return;
     }
+    // Cap = host's chosen playerCount (defaults to 4 before config is set)
+    const cap = this.config?.playerCount || 4;
+    const activeCount = this.players.filter(p => !p.disconnected && !p.spectator).length;
+    if (activeCount >= cap) {
+      // Lobby is full — reject the join so the client can show a clear error
+      conn.send(JSON.stringify({ type: "error", message: "Room is full" }));
+      return;
+    }
     // Take the lowest free slot (handles freed/reordered slots)
-    const takenSlots = new Set(this.players.filter(p => !p.disconnected && !p.spectator).map(p => p.slot));
+    // Reserved slots include all seated players (even disconnected ones) to prevent slot stealing
+    const takenSlots = new Set(this.players.filter(p => !p.spectator && !p.forfeited).map(p => p.slot));
     let slot = 0;
     while (takenSlots.has(slot)) slot++;
     const name = (data.name || `Player ${slot + 1}`).slice(0, 20);
-    // Remove any stale disconnected entry occupying this slot
-    this.players = this.players.filter(p => p.slot !== slot || !p.disconnected);
+    // Only remove forfeited players occupying this slot
+    this.players = this.players.filter(p => p.slot !== slot || !p.forfeited);
     this.players.push({ id: conn.id, name, slot, disconnected: false });
 
     conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: slot }));
@@ -152,9 +192,10 @@ export default class MegaTTTServer {
     if (!player) return;
     const name = (data.name || "").slice(0, 20).trim();
     if (!name) return;
+    const oldName = player.name;
     player.name = name;
     if (player.spectator) {
-      this.broadcast({ type: "spectator-renamed", name });
+      this.broadcast({ type: "spectator-renamed", oldName, name });
       return;
     }
     this.broadcast({ type: "player-joined", slot: player.slot, name, playerCount: this.activePlayerCount() });
@@ -162,12 +203,12 @@ export default class MegaTTTServer {
   }
 
   activePlayerCount() {
-    return this.players.filter(p => !p.disconnected && !p.spectator).length;
+    return this.players.filter(p => !p.disconnected && !p.spectator && !p.forfeited).length;
   }
 
   hasAllPlayersPresent() {
-    if (!this.config?.playerCount) return false;
-    return this.activePlayerCount() >= this.config.playerCount;
+    // No longer blocks the game when players disconnect
+    return true;
   }
 
   normalizeConfig(cfg) {
@@ -236,8 +277,8 @@ export default class MegaTTTServer {
   }
 
   async publishListing(source = "unknown") {
-    const hasSeatedPlayers = this.activePlayerCount() > 0;
-    const shouldList = !!(this.config?.public && this.phase === "lobby" && hasSeatedPlayers);
+    const hasSeatedPlayers = this.players.filter(p => !p.spectator).length > 0;
+    const shouldList = !!(this.config?.public && hasSeatedPlayers);
     this.syncListingHeartbeat(shouldList);
     const parties = this.room.context?.parties || this.room.parties;
     if (!parties?.lobby) return;
@@ -246,12 +287,16 @@ export default class MegaTTTServer {
     const payload = {
       action: shouldList ? "set" : "remove",
       code: this.room.id,
+      source,
       hostName: host?.name || "Host",
       players: this.activePlayerCount(),
+      spectators: this.players.filter(p => p.spectator && !p.disconnected).length,
       playerCount: this.config?.playerCount || 2,
       gridSize: this.config?.gridSize || 12,
       mode: this.config?.mode || "normal",
       teams: !!this.config?.teams,
+      isPublic: !!this.config?.public,
+      phase: this.phase,
     };
     try {
       await stub.fetch({
@@ -274,7 +319,9 @@ export default class MegaTTTServer {
     // Keep lobbies discoverable across lobby worker cold starts.
     this.listingInterval = setInterval(() => {
       this.publishListing("heartbeat");
-    }, 5_000);
+    }, LISTING_HEARTBEAT_MS);
+    // Don't keep the room worker alive solely because of this timer.
+    if (typeof this.listingInterval.unref === "function") this.listingInterval.unref();
   }
 
   handleStart(conn) {
@@ -318,10 +365,6 @@ export default class MegaTTTServer {
 
   handleMove(conn, data) {
     if (this.phase !== "playing") return;
-    if (!this.hasAllPlayersPresent()) {
-      conn.send(JSON.stringify({ type: "error", message: "Waiting for all players to reconnect" }));
-      return;
-    }
     if (this.pendingLinePick) {
       conn.send(JSON.stringify({ type: "error", message: "Choose which line segment to score first" }));
       return;
@@ -438,10 +481,6 @@ export default class MegaTTTServer {
 
   handleLineOffset(conn, data) {
     if (this.phase !== "playing" || !this.pendingLinePick) return;
-    if (!this.hasAllPlayersPresent()) {
-      conn.send(JSON.stringify({ type: "error", message: "Waiting for all players to reconnect" }));
-      return;
-    }
     const slot = this.getSlot(conn.id);
     const { pending, resume } = this.pendingLinePick;
     if (!canPickLineSlot(pending, slot)) {
@@ -496,10 +535,6 @@ export default class MegaTTTServer {
 
   handlePowerToggle(conn) {
     if (this.phase !== "playing") return;
-    if (!this.hasAllPlayersPresent()) {
-      conn.send(JSON.stringify({ type: "error", message: "Waiting for all players to reconnect" }));
-      return;
-    }
     if (this.pendingLinePick) return;
     const slot = this.getSlot(conn.id);
     if (slot !== this.cp) return;
@@ -539,7 +574,10 @@ export default class MegaTTTServer {
     if (!this.config) { this.rematchVotes.clear(); this.phase = "lobby"; this.broadcastState("rematch"); return; }
     this.stopTimer();
     this.rematchVotes.clear();
-    // Reset game state; keep config and players
+    for (const timer of this.graceTimers.values()) clearTimeout(timer);
+    this.graceTimers.clear();
+    // Reset game state; keep config and players, clear forfeits
+    for (const p of this.players) p.forfeited = false;
     this.phase = "playing";
     this.board = makeBoard(this.config.gridSize);
     this.cp = 0;
@@ -601,8 +639,22 @@ export default class MegaTTTServer {
   }
 
   advanceTurnFromEndTurn() {
-    const next = (this.cp + 1) % this.config.playerCount;
-    const nextGT = this.globalTurn + 1;
+    let next = (this.cp + 1) % this.config.playerCount;
+    let nextGT = this.globalTurn + 1;
+
+    // Skip forfeited players
+    let guard = 0;
+    while (guard < this.config.playerCount) {
+      const p = this.players.find(x => x.slot === next && !x.spectator);
+      if (p?.forfeited) {
+        next = (next + 1) % this.config.playerCount;
+        nextGT++;
+        guard++;
+      } else {
+        break;
+      }
+    }
+
     this.playerTurns[this.cp] = (this.playerTurns[this.cp] || 0) + 1;
     this.cp = next;
     this.globalTurn = nextGT;
@@ -631,31 +683,96 @@ export default class MegaTTTServer {
 
   startTimer() {
     this.stopTimer();
-    if (!this.config?.timer) return;
+    if (!this.config?.timer) {
+      // Non-timer games: if current player is forfeited, auto-play after a short delay
+      const p = this.players.find(x => x.slot === this.cp && !x.spectator);
+      if (p?.forfeited) {
+        setTimeout(() => this.autoPlayTurn(), 500);
+      }
+      return;
+    }
+    // If current player is forfeited, auto-play immediately
+    const p = this.players.find(x => x.slot === this.cp && !x.spectator);
+    if (p?.forfeited) {
+      this.autoPlayTurn();
+      return;
+    }
     this.timerInterval = setInterval(() => {
       if (this.pendingLinePick) return;
       this.timeLeft--;
       if (this.timeLeft <= 0) {
         this.stopTimer();
-        // Random move on timeout
-        const empty = [];
-        for (let r = 0; r < this.board.length; r++)
-          for (let c = 0; c < this.board[0].length; c++) {
-            if (this.board[r][c]) continue;
-            if (isBlocked(this.blocks, r, c, this.globalTurn)) continue;
-            empty.push([r, c]);
-          }
-        if (empty.length > 0) {
-          const [r, c] = empty[Math.floor(Math.random() * empty.length)];
-          this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
-          this.board[r][c] = { owner: this.cp, visible: true };
-          this.lastMove = [r, c];
-          this.endTurn();
-        }
+        this.autoPlayTurn();
       } else {
         this.broadcast({ type: "timer-tick", timeLeft: this.timeLeft });
       }
     }, 1000);
+  }
+
+  autoPlayTurn() {
+    if (this.phase !== "playing") return;
+    const empty = [];
+    for (let r = 0; r < this.board.length; r++)
+      for (let c = 0; c < this.board[0].length; c++) {
+        if (this.board[r][c]) continue;
+        if (isBlocked(this.blocks, r, c, this.globalTurn)) continue;
+        empty.push([r, c]);
+      }
+    if (empty.length > 0) {
+      const [r, c] = empty[Math.floor(Math.random() * empty.length)];
+      this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
+      this.board[r][c] = { owner: this.cp, visible: true };
+      this.lastMove = [r, c];
+      this.endTurn();
+    } else {
+      this.afterFirstScoreOfEndTurn();
+    }
+  }
+
+  finalizeDisconnect(connId) {
+    this.graceTimers.delete(connId);
+    const player = this.players.find(p => p.id === connId);
+    if (!player || player.spectator) return;
+    if (!player.disconnected) return; // reconnected in time
+
+    player.forfeited = true;
+    this.broadcast({ type: "player-forfeited", slot: player.slot, name: player.name });
+
+    const activeCount = this.players.filter(p => !p.spectator && !p.forfeited).length;
+    if (activeCount <= 1) {
+      const winner = this.players.find(p => !p.spectator && !p.forfeited);
+      if (winner) {
+        this.winner = winner.slot;
+        this.winCells = getScoredCells(this.board, winner.slot);
+        this.phase = "review";
+        this.stopTimer();
+        this.broadcastState("game-over");
+      } else {
+        this.phase = "review";
+        this.isDraw = true;
+        this.stopTimer();
+        this.broadcastState("game-over");
+      }
+      return;
+    }
+
+    if (this.phase === "playing" && this.cp === player.slot) {
+      this.stopTimer();
+      this.autoPlayTurn();
+    }
+  }
+
+  handleForfeit(conn) {
+    const player = this.players.find(p => p.id === conn.id);
+    if (!player || player.spectator) return;
+    if (this.phase !== "playing" && this.phase !== "review") return;
+    const timer = this.graceTimers.get(conn.id);
+    if (timer) {
+      clearTimeout(timer);
+      this.graceTimers.delete(conn.id);
+    }
+    if (player.forfeited) return;
+    this.finalizeDisconnect(conn.id);
   }
 
   stopTimer() {
@@ -671,9 +788,7 @@ export default class MegaTTTServer {
   }
 
   getState() {
-    const seatedPlayers = this.players
-      .filter(p => !p.spectator && !p.disconnected)
-      .map(p => ({ slot: p.slot, name: p.name }));
+    const seatedPlayers = this.players.filter(p => !p.spectator).map(p => ({ slot: p.slot, name: p.name, disconnected: p.disconnected }));
     const spectators = this.players
       .filter(p => p.spectator && !p.disconnected)
       .map(p => ({ name: p.name }));
@@ -698,6 +813,7 @@ export default class MegaTTTServer {
       pendingLinePick: this.pendingLinePick,
       players: seatedPlayers,
       spectators,
+      forfeitedSlots: this.players.filter(p => p.forfeited && !p.spectator).map(p => p.slot),
     };
   }
 

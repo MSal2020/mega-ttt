@@ -59,6 +59,7 @@ const css = `
   @keyframes revealPop { 0% { transform: scale(0); opacity: 0; } 50% { transform: scale(1.2); } 100% { transform: scale(1); opacity: 1; } }
   @keyframes winPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }
   @keyframes timerShrink { from { width: 100%; } to { width: 0%; } }
+  @keyframes timerShake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-3px); } 40% { transform: translateX(3px); } 60% { transform: translateX(-2px); } 80% { transform: translateX(2px); } }
   @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes scoreBump { 0% { transform: scale(1); } 40% { transform: scale(1.3); } 100% { transform: scale(1); } }
   @keyframes boardIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
@@ -250,6 +251,15 @@ function StatsScreen({ onBack, dark, setDark }) {
 
 function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const t = useTheme();
+  const lobbyDebugEnabled = useMemo(() => {
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("lobbyDebug") === "1") return true;
+      return localStorage.getItem("mtt-lobby-debug") === "1";
+    } catch {
+      return false;
+    }
+  }, []);
   const [tab, setTab] = useState("menu"); // menu | create | join
   const [roomCode, setRoomCode] = useState("");
   const [joinCode, setJoinCode] = useState("");
@@ -260,6 +270,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const [status, setStatus] = useState("connecting");
   const [copied, setCopied] = useState(false);
   const [playerName, setPlayerName] = useState(() => localStorage.getItem("mtt-player-name") || "");
+  const [lastRoom, setLastRoom] = useState(() => { try { return localStorage.getItem("mtt-last-room") || ""; } catch { return ""; } });
   const [awaitingStartAck, setAwaitingStartAck] = useState(false);
   const awaitingStartAckRef = useRef(false);
   const youRef = useRef(you);
@@ -279,6 +290,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const [playerCount, setPlayerCount] = useState(2);
   const [isPublic, setIsPublic] = useState(false);
   const [publicRooms, setPublicRooms] = useState([]);
+  const [lobbyDebugEvents, setLobbyDebugEvents] = useState([]);
   const autoWc = getWinConditions(gridSize, playerCount);
   const wc = {
     lineLen: customLineLen ?? autoWc.lineLen,
@@ -337,6 +349,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
           awaitingStartAckRef.current = false;
           setAwaitingStartAck(false);
           setError(msg.message);
+          connection.close();
           setTimeout(() => setError(null), 3000);
           break;
         default: break;
@@ -456,9 +469,20 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   // Subscribe to public room list while on the browse tab
   useEffect(() => {
     if (tab !== "browse") return;
-    const sub = subscribeToLobby(setPublicRooms);
+    setLobbyDebugEvents([]);
+    const sub = subscribeToLobby({
+      onRooms: setPublicRooms,
+      onDebug: lobbyDebugEnabled
+        ? (evt) => {
+            setLobbyDebugEvents((prev) => {
+              const next = [...prev, evt];
+              return next.slice(-40);
+            });
+          }
+        : null,
+    });
     return () => sub.close();
-  }, [tab]);
+  }, [tab, lobbyDebugEnabled]);
 
   const leaveLobby = useCallback(() => {
     if (conn) {
@@ -498,6 +522,13 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                 outline: "none", marginBottom: 20, boxSizing: "border-box",
               }}
             />
+            {lastRoom && (
+              <button className="btn-hover" onClick={() => { setJoinCode(lastRoom); setTab("join"); connectToRoom(lastRoom, false); }} style={{
+                width: "100%", padding: 12, borderRadius: 12, border: "none", fontSize: 14, fontWeight: 600,
+                cursor: "pointer", background: "#F25C54", color: "#fff",
+                fontFamily: "inherit", marginBottom: 12,
+              }}>Resume game {lastRoom}</button>
+            )}
             <button className="btn-hover" onClick={createRoom} style={{
               width: "100%", padding: 16, borderRadius: 12, border: "none", fontSize: 15, fontWeight: 600,
               cursor: "pointer", background: t.btnPrimary, color: t.btnPrimaryText,
@@ -552,14 +583,16 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                         {r.hostName} · {r.players}/{r.playerCount} · {r.gridSize}×{r.gridSize}
                         {r.mode === "powers" && " · powers"}
                         {r.teams && " · teams"}
+                        {r.phase !== "lobby" && ` · ${r.phase}`}
+                        {r.spectators > 0 && ` · ${r.spectators} watching`}
                       </div>
                     </div>
-                    <button className="btn-hover" disabled={r.players >= r.playerCount} onClick={() => { setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
+                    <button className="btn-hover" disabled={r.phase === "lobby" && r.players >= r.playerCount} onClick={() => { setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
                       padding: "6px 14px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
-                      cursor: r.players >= r.playerCount ? "default" : "pointer",
-                      background: r.players >= r.playerCount ? t.border : "#4A7BF7", color: "#fff", fontFamily: "inherit",
-                      opacity: r.players >= r.playerCount ? 0.5 : 1,
-                    }}>{r.players >= r.playerCount ? "Full" : "Join"}</button>
+                      cursor: r.phase === "lobby" && r.players >= r.playerCount ? "not-allowed" : "pointer",
+                      background: r.phase !== "lobby" || r.players >= r.playerCount ? "#7B61FF" : "#4A7BF7", color: "#fff", fontFamily: "inherit",
+                      opacity: r.phase === "lobby" && r.players >= r.playerCount ? 0.5 : 1,
+                    }}>{r.phase !== "lobby" ? "Spectate" : (r.players >= r.playerCount ? "Full" : "Join")}</button>
                   </div>
                 ))}
               </div>
@@ -568,6 +601,51 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
               width: "100%", padding: 10, borderRadius: 10, border: `1.5px solid ${t.border}`, fontSize: 13,
               cursor: "pointer", background: "transparent", color: t.textLabel, fontFamily: "inherit", marginTop: 14,
             }}>Back</button>
+            {lobbyDebugEnabled && (
+              <div style={{
+                marginTop: 12,
+                borderRadius: 10,
+                border: `1px solid ${t.border}`,
+                background: t.surface,
+                padding: 10,
+              }}>
+                <div style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 6,
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: t.textLabel, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Lobby debug
+                  </div>
+                  <button className="btn-hover" onClick={() => setLobbyDebugEvents([])} style={{
+                    border: "none",
+                    background: "transparent",
+                    color: t.textMuted,
+                    cursor: "pointer",
+                    fontSize: 11,
+                    padding: 0,
+                    fontFamily: "inherit",
+                  }}>clear</button>
+                </div>
+                <div style={{ maxHeight: 130, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.35, color: t.textMuted }}>
+                  {lobbyDebugEvents.length === 0 ? (
+                    <div>No events yet</div>
+                  ) : lobbyDebugEvents.map((e, i) => {
+                    const tm = new Date(e.at || Date.now()).toLocaleTimeString();
+                    const details = [
+                      e.event,
+                      e.source ? `src=${e.source}` : "",
+                      e.code ? `code=${e.code}` : "",
+                      typeof e.afterCount === "number" ? `rooms=${e.afterCount}` : (typeof e.roomCount === "number" ? `rooms=${e.roomCount}` : ""),
+                      typeof e.players === "number" ? `players=${e.players}` : "",
+                      Array.isArray(e.pruned) && e.pruned.length ? `pruned=${e.pruned.length}` : "",
+                    ].filter(Boolean).join(" ");
+                    return <div key={`${e.at || 0}-${i}`}>[{tm}] {details}</div>;
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1424,13 +1502,15 @@ function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, current
                   width: cellSize * 0.6, height: cellSize * 0.6, borderRadius: "50%",
                   background: color.fill,
                   color: color.fill,
-                  opacity: isScored ? 0.35 : 1,
+                  opacity: isScored ? 0.55 : 1,
                   animation: won ? `winPulse 0.6s ease-in-out infinite`
                     : cell.anim === "score" ? `scoreGlow 0.6s ease-out forwards`
                     : cell.anim === "steal" ? `popIn 0.3s cubic-bezier(0.34,1.56,0.64,1), stealFlash 0.4s ease-out`
                     : cell.anim === "reveal" ? `revealPop 0.4s cubic-bezier(0.34,1.56,0.64,1)`
                     : last ? "popIn 0.25s cubic-bezier(0.34,1.56,0.64,1)" : undefined,
-                  boxShadow: won ? `0 0 0 3px ${color.ring}` : undefined,
+                  boxShadow: won ? `0 0 0 4px ${color.ring}`
+                    : isScored ? `inset 0 0 0 2px ${color.fill}99, 0 0 0 2px ${color.ring}88`
+                    : undefined,
                   transition: "box-shadow 0.3s",
                 }} />
               )}
@@ -1558,13 +1638,20 @@ export default function MegaTicTacToe() {
   }, [tweenZoom]);
   const [msg, setMsg] = useState(null);
   const [history, setHistory] = useState([]);
+  const [redoHistory, setRedoHistory] = useState([]);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [timerLockout, setTimerLockout] = useState(false);
   const timerRef = useRef(null);
+  const turnCooldownUntilRef = useRef(0);
 
   // Online multiplayer state
   const [onlineConn, setOnlineConn] = useState(null);
   const [onlineSlot, setOnlineSlot] = useState(-1);
   const [onlinePlayers, setOnlinePlayers] = useState([]);
+  const [forfeitedSlots, setForfeitedSlots] = useState([]);
+  const [spectators, setSpectators] = useState([]); // [{name}]
+  const [graceTimers, setGraceTimers] = useState({}); // { [slot]: { name, until } }
+  const [graceTick, setGraceTick] = useState(0);
   const [connState, setConnState] = useState("connected"); // connected | reconnecting
   const [emoteFeed, setEmoteFeed] = useState([]); // [{id, slot, name, emote, at}]
   const [rematchVote, setRematchVote] = useState({ votedSlots: [], needed: 0, count: 0 });
@@ -1573,6 +1660,13 @@ export default function MegaTicTacToe() {
   const [pendingLinePick, setPendingLinePick] = useState(null);
 
   const toast = useCallback((t) => { setMsg(t); setTimeout(() => setMsg(null), 1600); }, []);
+
+  // Grace countdown ticker
+  useEffect(() => {
+    if (Object.keys(graceTimers).length === 0) return;
+    const id = setInterval(() => setGraceTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [graceTimers]);
 
   // Track a rolling trail of the last 3 moves (newest first) for the move-trail visual
   useEffect(() => {
@@ -1728,8 +1822,9 @@ export default function MegaTicTacToe() {
       setBlocks(snap.blocks || []);
       setPwr({ active: false, used: false, firstDone: false, tpSource: null });
       setWinner(null); setIsDraw(false); setWinCells([]);
-      setMsg(null); setHistory([]); setReplayIdx(null);
+      setMsg(null); setHistory([]); setRedoHistory([]); setReplayIdx(null);
       setTimeLeft(snap.config.timer || 0);
+      setTimerLockout(false);
       const vw = Math.min(window.innerWidth - 32, 600);
       setZoom(Math.min(52, Math.max(22, Math.floor(vw / snap.config.gridSize))));
       setScreen("game");
@@ -1744,8 +1839,9 @@ export default function MegaTicTacToe() {
     setWinCells([]); setWinner(null); setIsDraw(false);
     setPwr({ active: false, used: false, firstDone: false, tpSource: null });
     setBlocks([]); setLastMoves([]);
-    setMsg(null); setHistory([]); setReplayIdx(null);
+    setMsg(null); setHistory([]); setRedoHistory([]); setReplayIdx(null);
     setTimeLeft(cfg.timer || 0);
+    setTimerLockout(false);
     setPendingLinePick(null);
     const vw = Math.min(window.innerWidth - 32, 600);
     setZoom(Math.min(52, Math.max(22, Math.floor(vw / cfg.gridSize))));
@@ -1768,9 +1864,21 @@ export default function MegaTicTacToe() {
     if (msg.winCells) setWinCells(msg.winCells);
     if (msg.pwr) setPwr({ tpSource: null, ...msg.pwr });
     if (msg.blocks) setBlocks(msg.blocks);
-    if (msg.timeLeft !== undefined) setTimeLeft(msg.timeLeft);
+    if (msg.timeLeft !== undefined) { setTimeLeft(msg.timeLeft); if (msg.timeLeft > 0) setTimerLockout(false); }
     if (msg.you !== undefined) setOnlineSlot(msg.you);
-    if (msg.players) setOnlinePlayers(msg.players);
+    if (msg.players) {
+      setOnlinePlayers(msg.players);
+      // Clear grace timers for any players who are now connected
+      setGraceTimers(prev => {
+        const next = { ...prev };
+        for (const p of msg.players) {
+          if (!p.disconnected && next[p.slot] !== undefined) delete next[p.slot];
+        }
+        return next;
+      });
+    }
+    if (msg.forfeitedSlots) setForfeitedSlots(msg.forfeitedSlots);
+    if (msg.spectators !== undefined) setSpectators(msg.spectators);
     if (msg.pendingLinePick !== undefined) setPendingLinePick(msg.pendingLinePick);
 
     if (msg.config?.gridSize) {
@@ -1788,7 +1896,14 @@ export default function MegaTicTacToe() {
     setOnlineConn(connection);
     setHistory([]);
     setMsg(null);
+    setGraceTimers({});
+    setForfeitedSlots([]);
     applyOnlineState(msg);
+    try {
+      const u = new URL(window.location.href);
+      const room = u.searchParams.get("room");
+      if (room) localStorage.setItem("mtt-last-room", room.toUpperCase());
+    } catch {}
   }, [applyOnlineState]);
 
   // Online: set up message listener when connection changes
@@ -1803,19 +1918,33 @@ export default function MegaTicTacToe() {
         toast("Opponent disconnected");
         return;
       }
+      if (msg.type === "player-grace") {
+        toast(`${msg.name || "Player " + (msg.slot + 1)} disconnected — grace period`);
+        setGraceTimers(prev => ({ ...prev, [msg.slot]: { name: msg.name, until: msg.graceUntil } }));
+        return;
+      }
+      if (msg.type === "player-forfeited") {
+        toast(`${msg.name || "Player " + (msg.slot + 1)} forfeited`);
+        setForfeitedSlots(prev => prev.includes(msg.slot) ? prev : [...prev, msg.slot]);
+        setGraceTimers(prev => { const next = { ...prev }; delete next[msg.slot]; return next; });
+        return;
+      }
       if (msg.type === "player-joined") {
         setOnlinePlayers(prev => {
           if (prev.find(p => p.slot === msg.slot)) {
-            return prev.map(p => p.slot === msg.slot ? { ...p, name: msg.name } : p);
+            return prev.map(p => p.slot === msg.slot ? { ...p, name: msg.name, disconnected: false } : p);
           }
-          return [...prev, { slot: msg.slot, name: msg.name }];
+          return [...prev, { slot: msg.slot, name: msg.name, disconnected: false }];
         });
+        setGraceTimers(prev => { const next = { ...prev }; delete next[msg.slot]; return next; });
         toast(`${msg.name} joined`);
         return;
       }
       if (msg.type === "player-left") {
-        setOnlinePlayers(prev => prev.filter(p => p.slot !== msg.slot));
-        toast("Opponent left");
+        if (msg.slot >= 0) {
+          setOnlinePlayers(prev => prev.map(p => p.slot === msg.slot ? { ...p, disconnected: true } : p));
+        }
+        toast(`${msg.name || "Player " + (msg.slot + 1)} left`);
         return;
       }
       if (msg.type === "error") {
@@ -1836,8 +1965,17 @@ export default function MegaTicTacToe() {
         setTimeout(() => setEmoteFeed(prev => prev.filter(e => e.id !== id)), 3500);
         return;
       }
+      if (msg.type === "spectator-joined") {
+        toast(`${msg.name} is watching`);
+        setSpectators(prev => prev.find(s => s.name === msg.name) ? prev : [...prev, { name: msg.name }]);
+        return;
+      }
+      if (msg.type === "spectator-renamed") {
+        setSpectators(prev => prev.map(s => s.name === msg.oldName ? { name: msg.name } : s));
+        return;
+      }
       // Full state updates
-      if (msg.board || msg.phase) {
+      if (msg.phase !== undefined || msg.board !== undefined || msg.players !== undefined || msg.spectators !== undefined) {
         applyOnlineState(msg);
       }
     };
@@ -1932,6 +2070,7 @@ export default function MegaTicTacToe() {
     }
     setBoard(revealed); setScores(s2.scores); setCooldowns(cd);
     setPlayerTurns(pt => ({ ...pt, [cp]: (pt[cp] || 0) + 1 }));
+    turnCooldownUntilRef.current = Date.now() + 600; // prevent double-tap on next player
     setCp(next); setGlobalTurn(nextGT);
     if (next === 0) setTurn(t => t + 1);
     setPwr({ active: false, used: false, firstDone: false, tpSource: null });
@@ -2053,6 +2192,7 @@ export default function MegaTicTacToe() {
       setTimeLeft(t => {
         if (t <= 1) {
           clearInterval(id);
+          setTimerLockout(true);
           setTimeout(() => {
             const b = boardRef.current;
             const empty = [];
@@ -2070,6 +2210,7 @@ export default function MegaTicTacToe() {
               endTurnRef.current(nb, { ...cooldownsRef.current });
               toast("Time's up! Random tile placed");
             }
+            setTimeout(() => setTimerLockout(false), 2000);
           }, 0);
           return 0;
         }
@@ -2212,6 +2353,15 @@ export default function MegaTicTacToe() {
   const undo = useCallback(() => {
     if (history.length === 0) return;
     const snap = history[history.length - 1];
+    // Save current state for redo
+    setRedoHistory(rh => [...rh, {
+      board: board.map(row => row.map(x => x ? { ...x } : null)),
+      cp, turn, globalTurn,
+      scores: { ...scores },
+      cooldowns: { ...cooldowns },
+      playerTurns: { ...playerTurns },
+      lastMove, undoPlayer: snap.undoPlayer,
+    }]);
     setHistory(h => h.slice(0, -1));
     setBoard(snap.board); setCp(snap.cp); setTurn(snap.turn);
     setGlobalTurn(snap.globalTurn); setScores(snap.scores);
@@ -2221,7 +2371,30 @@ export default function MegaTicTacToe() {
     setPendingLinePick(null);
     setScreen("game"); setMsg(null);
     toast(`Undid ${PLAYERS[snap.undoPlayer].name}'s move`);
-  }, [history, toast]);
+  }, [history, toast, board, cp, turn, globalTurn, scores, cooldowns, playerTurns, lastMove]);
+
+  const redo = useCallback(() => {
+    if (redoHistory.length === 0) return;
+    const snap = redoHistory[redoHistory.length - 1];
+    setRedoHistory(rh => rh.slice(0, -1));
+    // Save current state back into history for undo chain
+    setHistory(h => [...h, {
+      board: board.map(row => row.map(x => x ? { ...x } : null)),
+      cp, turn, globalTurn,
+      scores: { ...scores },
+      cooldowns: { ...cooldowns },
+      playerTurns: { ...playerTurns },
+      lastMove, undoPlayer: snap.undoPlayer,
+    }]);
+    setBoard(snap.board); setCp(snap.cp); setTurn(snap.turn);
+    setGlobalTurn(snap.globalTurn); setScores(snap.scores);
+    setCooldowns(snap.cooldowns); setPlayerTurns(snap.playerTurns);
+    setLastMove(snap.lastMove); setWinCells([]); setWinner(null);
+    setIsDraw(false); setPwr({ active: false, used: false, firstDone: false });
+    setPendingLinePick(null);
+    setScreen("game"); setMsg(null);
+    toast(`Redid ${PLAYERS[snap.undoPlayer].name}'s move`);
+  }, [redoHistory, board, cp, turn, globalTurn, scores, cooldowns, playerTurns, lastMove, toast]);
 
   const handleClick = useCallback((r, c) => {
     // Online mode: send move to server
@@ -2231,13 +2404,13 @@ export default function MegaTicTacToe() {
         else toast("Waiting for line choice");
         return;
       }
-      const requiredPlayers = config?.playerCount || 2;
-      if (onlinePlayers.length < requiredPlayers) { toast("Waiting for players"); return; }
       if (cp !== onlineSlot) { toast("Opponent's turn"); return; }
       if (onlineConnRef.current) onlineConnRef.current.move(r, c);
       return;
     }
     if (screen !== "game") return;
+    if (timerLockout) { toast("Timer expired — wait a moment"); return; }
+    if (Date.now() < turnCooldownUntilRef.current) return; // silently ignore double taps
     if (pendingLinePick) { toast("Choose which segment counts for your line"); return; }
     if (config.ai && cp === 1) return; // AI's turn, ignore clicks
     const cell = board[r][c];
@@ -2246,6 +2419,7 @@ export default function MegaTicTacToe() {
 
     // Save snapshot on first action of a turn (not step 2)
     if (!pwr.firstDone) {
+      setRedoHistory([]); // new branch, clear redo
       setHistory(h => [...h, {
         board: board.map(row => row.map(x => x ? { ...x } : null)),
         cp, turn, globalTurn, scores: { ...scores }, cooldowns: { ...cooldowns },
@@ -2357,7 +2531,7 @@ export default function MegaTicTacToe() {
 
     setBoard(b);
     endTurn(b, { ...cooldowns });
-  }, [screen, board, blocks, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast, pendingLinePick, teamsArr]);
+  }, [screen, board, blocks, config, cp, onlineSlot, onlinePlayers, cooldowns, pwr, globalTurn, turn, playerTurns, scores, endTurn, toast, pendingLinePick, teamsArr, timerLockout]);
 
   useEffect(() => { handleClickRef.current = handleClick; }, [handleClick]);
 
@@ -2446,7 +2620,7 @@ export default function MegaTicTacToe() {
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", padding: "10px 16px", gap: 10 }}>
-              <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "var(--textLabel)" }}>←</button>
+              <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } try { const u = new URL(window.location.href); u.searchParams.delete("room"); window.history.replaceState({}, "", u.toString()); localStorage.removeItem("mtt-last-room"); } catch {} setScreen("setup"); }} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "var(--textLabel)" }}>←</button>
               <div style={{ width: 12, height: 12, borderRadius: "50%", background: playerColor.fill, boxShadow: `0 0 0 3px ${playerColor.light}`, transition: "background 0.3s, box-shadow 0.3s" }} />
               <span key={cp} style={{ fontSize: 15, fontWeight: 600, flex: 1, color: playerColor.fill, animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)" }}>
                 {isOnline ? (() => {
@@ -2456,8 +2630,18 @@ export default function MegaTicTacToe() {
                 })() : config.ai && cp === 1 ? "AI thinking..." : `${playerColor.name}'s turn`}
               </span>
               <span style={{ fontSize: 12, color: "var(--textLabel)" }}>Turn {turn}</span>
-              {!isOnline && history.length > 0 && !pwr.firstDone && (
-                <button className="btn-hover" onClick={undo} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, cursor: "pointer", padding: "4px 10px", color: "var(--textMuted)", fontFamily: "inherit" }}>Undo</button>
+              {isOnline && spectators.length > 0 && (
+                <span style={{ fontSize: 11, color: "var(--textMuted)" }}>{spectators.length} watching</span>
+              )}
+              {!isOnline && !pwr.firstDone && (
+                <div style={{ display: "flex", gap: 6 }}>
+                  {history.length > 0 && (
+                    <button className="btn-hover" onClick={undo} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, cursor: "pointer", padding: "4px 10px", color: "var(--textMuted)", fontFamily: "inherit" }}>Undo</button>
+                  )}
+                  {redoHistory.length > 0 && (
+                    <button className="btn-hover" onClick={redo} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, cursor: "pointer", padding: "4px 10px", color: "var(--textMuted)", fontFamily: "inherit" }}>Redo</button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -2476,6 +2660,14 @@ export default function MegaTicTacToe() {
                   display: "inline-flex", alignItems: "center",
                 }}>
                   <RollingNumber value={scores[i] || 0} />/{config.linesNeeded}
+                  {graceTimers[i] && (
+                    <span style={{ fontSize: 10, color: "#F25C54", marginLeft: 4, fontWeight: 700 }}>
+                      DC {Math.max(0, Math.ceil((graceTimers[i].until - Date.now()) / 1000))}s
+                    </span>
+                  )}
+                  {forfeitedSlots.includes(i) && (
+                    <span style={{ fontSize: 10, color: "#999", marginLeft: 4, fontWeight: 700 }}>FF</span>
+                  )}
                 </span>
               </div>
             ))}
@@ -2525,10 +2717,10 @@ export default function MegaTicTacToe() {
           </div>
         )}
 
-        {/* Emote feed (floating, top-right) */}
-        {isOnline && emoteFeed.length > 0 && (
+        {/* Player emote feed (floating, top-right) */}
+        {isOnline && emoteFeed.some(e => e.slot >= 0) && (
           <div style={{ position: "fixed", top: 70, right: 12, zIndex: 50, display: "flex", flexDirection: "column", gap: 6, pointerEvents: "none" }}>
-            {emoteFeed.map(e => (
+            {emoteFeed.filter(e => e.slot >= 0).map(e => (
               <div key={e.id} style={{
                 background: "var(--card)", borderRadius: 16, padding: "6px 12px",
                 fontSize: 14, color: "var(--text)", boxShadow: "0 2px 10px rgba(0,0,0,0.12)",
@@ -2543,8 +2735,27 @@ export default function MegaTicTacToe() {
           </div>
         )}
 
+        {/* Spectator emote feed (floating, bottom-right) */}
+        {isOnline && emoteFeed.some(e => e.slot < 0) && (
+          <div style={{ position: "fixed", bottom: 70, right: 12, zIndex: 50, display: "flex", flexDirection: "column", gap: 6, pointerEvents: "none" }}>
+            {emoteFeed.filter(e => e.slot < 0).map(e => (
+              <div key={e.id} style={{
+                background: "rgba(120,120,120,0.15)", borderRadius: 16, padding: "6px 12px",
+                fontSize: 13, color: "var(--textMuted)", boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+                display: "flex", alignItems: "center", gap: 8,
+                animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)",
+                borderLeft: "3px solid #A0A0A0",
+                backdropFilter: "blur(4px)",
+              }}>
+                <span style={{ fontSize: 11, opacity: 0.7 }}>👀 {e.name}</span>
+                <span>{e.emote}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Emote bar */}
-        {isOnline && !isReview && onlineSlot >= 0 && (
+        {isOnline && !isReview && (
           <div style={{ display: "flex", gap: 6, padding: "6px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", justifyContent: "center" }}>
             {["GG", "😂", "🤔", "👀", "🔥", "😭"].map(e => (
               <button key={e} className="btn-hover" onClick={() => onlineConnRef.current?.emote(e)} style={{
@@ -2552,6 +2763,18 @@ export default function MegaTicTacToe() {
                 background: "var(--surface)", fontSize: 14, cursor: "pointer", fontFamily: "inherit",
               }}>{e}</button>
             ))}
+            {onlineSlot >= 0 && (
+              <>
+                <div style={{ width: 1, background: "var(--borderLight)", margin: "0 4px" }} />
+                <button className="btn-hover" onClick={() => {
+                  if (window.confirm("Forfeit this game?")) onlineConnRef.current?.forfeit();
+                }} style={{
+                  padding: "4px 10px", borderRadius: 8, border: "1px solid var(--border)",
+                  background: "var(--surface)", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+                  color: "#F25C54", fontWeight: 600,
+                }}>Forfeit</button>
+              </>
+            )}
           </div>
         )}
 
@@ -2566,12 +2789,13 @@ export default function MegaTicTacToe() {
             <div style={{ height: 4, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
               <div style={{
                 height: "100%", borderRadius: 2,
-                background: timeLeft <= 5 ? "#F25C54" : playerColor.fill,
+                background: playerColor.fill,
                 width: `${(timeLeft / config.timer) * 100}%`,
-                transition: "width 1s linear, background 0.3s",
+                transition: "width 1s linear",
+                animation: timeLeft <= 5 ? "timerShake 0.5s ease-in-out infinite" : undefined,
               }} />
             </div>
-            <div style={{ textAlign: "center", fontSize: 11, color: timeLeft <= 5 ? "#F25C54" : "var(--textLabel)", fontWeight: 600, marginTop: 2 }}>
+            <div style={{ textAlign: "center", fontSize: 11, color: "var(--textLabel)", fontWeight: 600, marginTop: 2 }}>
               {timeLeft}s
             </div>
           </div>
@@ -2633,7 +2857,7 @@ export default function MegaTicTacToe() {
         {/* Bottom bar */}
         {isReview ? (
           <div style={{ display: "flex", gap: 10, padding: "10px 16px", background: "var(--card)", borderTop: "1px solid var(--borderLight)", animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1)" }}>
-            <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } setScreen("setup"); }} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }}>{isOnline ? "Leave" : "Setup"}</button>
+            <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } try { const u = new URL(window.location.href); u.searchParams.delete("room"); window.history.replaceState({}, "", u.toString()); localStorage.removeItem("mtt-last-room"); } catch {} setScreen("setup"); }} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }}>{isOnline ? "Leave" : "Setup"}</button>
             <button className="btn-hover" onClick={shareSnapshot} style={{ padding: "12px 14px", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--surfaceAlt)", color: "var(--text)", fontFamily: "inherit" }} title="Share board image">Share</button>
             <button className="btn-hover" disabled={isOnline && rematchVote.votedSlots.includes(onlineSlot)} onClick={() => isOnline && onlineConnRef.current ? onlineConnRef.current.rematch() : startGame(config)} style={{ flex: 1, padding: 12, borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "var(--btnPrimary)", color: "var(--btnPrimaryText)", fontFamily: "inherit", opacity: isOnline && rematchVote.votedSlots.includes(onlineSlot) ? 0.6 : 1 }}>{isOnline ? (rematchVote.votedSlots.includes(onlineSlot) ? `Waiting ${rematchVote.count}/${rematchVote.needed}` : (rematchVote.needed > 0 ? `Rematch ${rematchVote.count}/${rematchVote.needed}` : "Rematch")) : "Play Again"}</button>
           </div>
