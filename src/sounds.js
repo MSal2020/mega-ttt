@@ -74,3 +74,16 @@ export const haptic = {
   win: () => vibe([50, 30, 50, 30, 100]),
   error: () => vibe([30, 50, 30]),
 };
+
+// Motion preference — when on, hides ambient animations and decorative motion.
+// Defaults to OS prefers-reduced-motion if unset.
+export function reducedMotion() {
+  const v = localStorage.getItem("mtt-reduced-motion");
+  if (v === "1") return true;
+  if (v === "0") return false;
+  try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+  catch { return false; }
+}
+export function setReducedMotion(on) {
+  localStorage.setItem("mtt-reduced-motion", on ? "1" : "0");
+}
