@@ -1,50 +1,38 @@
-import { useEffect, useState } from "react";
-
-const cache = new Map();
-
-function InlineSVG({ src, color, size = 16, className = "" }) {
-  const [svg, setSvg] = useState(cache.get(src) || null);
-
-  useEffect(() => {
-    if (cache.has(src)) {
-      setSvg(cache.get(src));
-      return;
-    }
-    fetch(src)
-      .then(r => r.text())
-      .then(text => {
-        const cleaned = text
-          .replace(/\swidth="[^"]*"/g, "")
-          .replace(/\sheight="[^"]*"/g, "");
-        cache.set(src, cleaned);
-        setSvg(cleaned);
-      })
-      .catch(() => {});
-  }, [src]);
-
-  if (!svg) return <span style={{ width: size, height: size, display: "inline-block" }} />;
-
+function MaskIcon({ src, color, size = 16 }) {
   return (
     <span
-      className={className}
-      style={{ color, width: size, height: size, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-      dangerouslySetInnerHTML={{ __html: svg }}
+      aria-hidden
+      style={{
+        display: "inline-block",
+        width: size,
+        height: size,
+        flexShrink: 0,
+        backgroundColor: color || "currentColor",
+        WebkitMaskImage: `url(${src})`,
+        maskImage: `url(${src})`,
+        WebkitMaskRepeat: "no-repeat",
+        maskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        maskPosition: "center",
+        WebkitMaskSize: "contain",
+        maskSize: "contain",
+      }}
     />
   );
 }
 
 export function SettingsIcon({ color, size = 18 }) {
-  return <InlineSVG src="/settings.svg" color={color} size={size} />;
+  return <MaskIcon src="/settings.svg" color={color} size={size} />;
 }
 
 export function LocalIcon({ color, size = 16 }) {
-  return <InlineSVG src="/local.svg" color={color} size={size} />;
+  return <MaskIcon src="/local.svg" color={color} size={size} />;
 }
 
 export function AIIcon({ color, size = 16 }) {
-  return <InlineSVG src="/ai.svg" color={color} size={size} />;
+  return <MaskIcon src="/ai.svg" color={color} size={size} />;
 }
 
 export function OnlineIcon({ color, size = 16 }) {
-  return <InlineSVG src="/online.svg" color={color} size={size} />;
+  return <MaskIcon src="/online.svg" color={color} size={size} />;
 }
