@@ -44,6 +44,7 @@ export function OnlineLobby({ onBack, onGameStart }) {
   const [timerEnabled, setTimerEnabled] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(15);
   const [playerCount, setPlayerCount] = useState(2);
+  const [teams, setTeamsState] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
   const [publicRooms, setPublicRooms] = useState([]);
   const [lobbyDebugEvents, setLobbyDebugEvents] = useState([]);
@@ -152,12 +153,13 @@ export function OnlineLobby({ onBack, onGameStart }) {
       ...wc,
       timer: timerEnabled ? timerSeconds : 0,
       ai: false,
+      teams: teams && playerCount === 4,
       public: isPublic,
     };
     awaitingStartAckRef.current = true;
     setAwaitingStartAck(true);
     conn.setConfig(config);
-  }, [conn, mode, gridSize, powers, wc, timerEnabled, timerSeconds, hasDupes, isPublic]);
+  }, [conn, mode, gridSize, powers, wc, timerEnabled, timerSeconds, hasDupes, isPublic, teams, playerCount]);
 
   const copyCode = useCallback(() => {
     navigator.clipboard.writeText(roomCode).then(() => {
@@ -218,10 +220,11 @@ export function OnlineLobby({ onBack, onGameStart }) {
       ...wc,
       timer: timerEnabled ? timerSeconds : 0,
       ai: false,
+      teams: teams && playerCount === 4,
       public: isPublic,
     };
     conn.setConfig(config);
-  }, [conn, isHost, mode, gridSize, playerCount, powers, wc.lineLen, wc.linesNeeded, timerEnabled, timerSeconds, isPublic]);
+  }, [conn, isHost, mode, gridSize, playerCount, powers, wc.lineLen, wc.linesNeeded, timerEnabled, timerSeconds, isPublic, teams]);
 
   // Subscribe to public room list while on the browse tab
   useEffect(() => {
@@ -283,7 +286,7 @@ export function OnlineLobby({ onBack, onGameStart }) {
             )}
             <div style={{ flex: 1, minHeight: 280, position: "relative" }}>
               {inRoom
-                ? <LobbyPresence roomCode={roomCode} players={players} you={you} playerCount={playerCount} gridSize={gridSize} mode={mode} />
+                ? <LobbyPresence roomCode={roomCode} players={players} you={you} playerCount={playerCount} gridSize={gridSize} mode={mode} teams={teams && playerCount === 4} />
                 : <HeroShapeGrid gridSize={gridSize} playerCount={playerCount} mode={mode} />}
             </div>
           </div>
@@ -641,6 +644,24 @@ export function OnlineLobby({ onBack, onGameStart }) {
                     </div>
                   </div>
                 </div>
+
+                {playerCount === 4 && (
+                  <div style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: t.inkMuted, letterSpacing: "0.5px", textTransform: "uppercase" }}>Team mode</div>
+                      <div style={{ fontSize: 13, color: t.inkMuted, marginTop: 2 }}>{teams ? "Circle + Square vs Triangle + Diamond" : "Free-for-all"}</div>
+                    </div>
+                    <button onClick={() => setTeamsState(v => !v)} style={{
+                      width: 40, height: 22, borderRadius: 11, border: `0.5px solid ${t.hair}`, cursor: "pointer",
+                      background: teams ? t.ink : t.glassFillSolid, position: "relative", transition: "background 0.2s",
+                    }}>
+                      <div style={{
+                        width: 18, height: 18, borderRadius: "50%", background: teams ? t.bg1 : t.ink, position: "absolute", top: 1,
+                        left: teams ? 20 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.18)",
+                      }} />
+                    </button>
+                  </div>
+                )}
 
                 <Collapse open={mode === "powers"} maxH={260}>
                   <div style={{ marginBottom: 16, paddingBottom: 2 }}>

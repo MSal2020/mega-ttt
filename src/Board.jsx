@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { PLAYERS, isBlocked } from "../lib/gameLogic.js";
+import { PLAYERS, TEAM_ACCENTS, teamOf, isBlocked } from "../lib/gameLogic.js";
 import { useTheme } from "./theme.js";
 import { PlayerMark } from "./widgets.jsx";
 
-export function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner, blocks = [], globalTurn = 1, tpSource = null, cursor = null, linePickCells = null }) {
+export function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, currentPlayer, actionMode, zoom, onZoom, ghostOwner, blocks = [], globalTurn = 1, tpSource = null, cursor = null, linePickCells = null, teams = false }) {
   const t = useTheme();
   const n = board.length;
   const cellSize = Math.max(28, zoom);
@@ -316,6 +316,13 @@ export function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, 
                   <div className="cell-hover" style={{
                     position: "absolute", inset: 2, borderRadius: 4, transition: "background 0.15s",
                   }} />
+                  {teams && (
+                    <div className="hover-dot" style={{
+                      position: "absolute", inset: 1, borderRadius: 4,
+                      boxShadow: `inset 0 0 0 1.5px ${TEAM_ACCENTS[teamOf(currentPlayer)]}`,
+                      opacity: 0, transition: "opacity 0.18s", pointerEvents: "none",
+                    }} />
+                  )}
                   <div className="hover-dot" style={{
                     position: "absolute", inset: cellSize * 0.2,
                     opacity: 0, transform: "scale(0.6)",
@@ -332,6 +339,14 @@ export function Board({ board, onCellClick, lastMove, lastMoves = [], winCells, 
                   <line x1="4" y1="4" x2="16" y2="16" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                   <line x1="16" y1="4" x2="4" y2="16" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                 </svg>
+              )}
+              {owned && teams && (
+                <div style={{
+                  position: "absolute", inset: 1, borderRadius: 4,
+                  boxShadow: `inset 0 0 0 1.5px ${TEAM_ACCENTS[teamOf(cell.owner)]}`,
+                  opacity: isScored ? 0.45 : 0.78,
+                  pointerEvents: "none",
+                }} />
               )}
               {owned && (
                 <div style={{

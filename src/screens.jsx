@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { PLAYERS } from "../lib/gameLogic.js";
+import { PLAYERS, TEAM_ACCENTS, TEAM_NAMES, teamOf } from "../lib/gameLogic.js";
 import { useTheme } from "./theme.js";
 import { PlayerMark } from "./widgets.jsx";
 import {
@@ -456,7 +456,7 @@ export function HeroShapeGrid({ gridSize = 12, playerCount = 2, mode = "normal",
   );
 }
 
-export function LobbyPresence({ roomCode, players, you, playerCount, gridSize, mode }) {
+export function LobbyPresence({ roomCode, players, you, playerCount, gridSize, mode, teams = false }) {
   const t = useTheme();
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
@@ -485,11 +485,15 @@ export function LobbyPresence({ roomCode, players, you, playerCount, gridSize, m
             const p = players.find(pl => pl.slot === slot);
             const filled = !!p;
             const isYou = you === slot;
+            const team = teams ? teamOf(slot) : null;
+            const teamAccent = team !== null ? TEAM_ACCENTS[team] : null;
             return (
               <div key={slot} style={{
                 display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 14,
                 background: filled ? t.glassFillSolid : "transparent",
-                border: filled ? `0.5px solid ${t.hair}` : `1.5px dashed ${t.hairStrong}`,
+                border: filled
+                  ? (teamAccent ? `1.2px solid ${teamAccent}` : `0.5px solid ${t.hair}`)
+                  : (teamAccent ? `1.5px dashed ${teamAccent}88` : `1.5px dashed ${t.hairStrong}`),
                 animation: filled ? "slotFillIn 0.45s cubic-bezier(0.34,1.56,0.64,1)" : "slotPulse 2.4s ease-in-out infinite",
                 transition: "background 0.25s, border-color 0.25s",
                 minHeight: 60,
@@ -514,6 +518,13 @@ export function LobbyPresence({ roomCode, players, you, playerCount, gridSize, m
                   </div>
                   <div style={{ fontSize: 11, color: t.inkMuted, marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
                     <span>{PLAYERS[slot].name}</span>
+                    {teamAccent && (
+                      <span style={{
+                        padding: "1px 6px", borderRadius: 5,
+                        border: `0.5px solid ${teamAccent}`,
+                        color: teamAccent, fontSize: 10, fontWeight: 700, letterSpacing: "0.4px",
+                      }}>{TEAM_NAMES[team]}</span>
+                    )}
                     {filled && slot === 0 && <span style={{ padding: "1px 6px", borderRadius: 5, background: t.inkGhost, border: `0.5px solid ${t.hair}`, fontSize: 10, fontWeight: 600, letterSpacing: "0.4px" }}>HOST</span>}
                     {filled && isYou && <span style={{ padding: "1px 6px", borderRadius: 5, background: t.inkGhost, border: `0.5px solid ${t.hair}`, fontSize: 10, fontWeight: 600, letterSpacing: "0.4px" }}>YOU</span>}
                   </div>

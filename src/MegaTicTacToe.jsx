@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
-  PLAYERS, POWERS, getWinConditions, makeBoard, cloneBoard,
+  PLAYERS, POWERS, TEAM_ACCENTS, TEAM_NAMES, TEAM_SLOTS, teamOf,
+  getWinConditions, makeBoard, cloneBoard,
   revealGhosts, scoreAndMark, applyPendingLineScore, aiPickMove, aiPickMoveHard, aiPickPowerAction, aiPlanPowerAction,
   canPickLineSlot,
   isBoardFull, getScoredCells, generateRoomCode,
@@ -1100,13 +1101,17 @@ export default function MegaTicTacToe() {
   const isDouble = isPow && power?.id === "doublePlace" && ((playerTurns[cp] || 0) + 1) % 3 === 0;
   const playerColor = PLAYERS[cp];
   const winnerColor = winner !== null ? PLAYERS[winner] : null;
+  const teamsOn = !!config?.teams && config?.playerCount === 4;
+  const winnerTeam = teamsOn && winner !== null ? teamOf(winner) : null;
+  const currentTeam = teamsOn ? teamOf(cp) : null;
+  const confettiColor = winnerTeam !== null ? TEAM_ACCENTS[winnerTeam] : winnerColor?.fill;
 
   return (
     <ThemeCtx.Provider value={theme}>
       <style>{themedCss}</style>
       <div className="glass-bg" />
       <div style={{ position: "relative", zIndex: 1, height: "100dvh", display: "flex", flexDirection: "column", background: "transparent", userSelect: "none", WebkitUserSelect: "none", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif", letterSpacing: "-0.01em", overflow: "hidden", transition: "background 0.3s" }}>
-        {isReview && !isDraw && winnerColor && <Confetti color={winnerColor.fill} />}
+        {isReview && !isDraw && winnerColor && <Confetti color={confettiColor} />}
 
         {/* Header */}
         <div style={{ background: theme.glassFill, backdropFilter: "blur(22px) saturate(180%)", WebkitBackdropFilter: "blur(22px) saturate(180%)", borderBottom: `0.5px solid ${theme.hair}`, transition: "background 0.3s" }}>
@@ -1129,20 +1134,43 @@ export default function MegaTicTacToe() {
                   <div style={{
                     width: 32, height: 32, borderRadius: 10, background: theme.ink,
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    boxShadow: `0 2px 12px ${theme.inkGhost}`,
+                    boxShadow: winnerTeam !== null ? `0 2px 12px ${TEAM_ACCENTS[winnerTeam]}66` : `0 2px 12px ${theme.inkGhost}`,
                     animation: "popIn 0.4s cubic-bezier(0.34,1.56,0.64,1)",
+                    border: winnerTeam !== null ? `1.5px solid ${TEAM_ACCENTS[winnerTeam]}` : undefined,
                   }}>
-                    <PlayerMark player={winnerColor} size={20} tone={theme.bg1} bg={theme.ink} />
+                    {winnerTeam !== null ? (
+                      <div style={{ display: "flex", gap: 2 }}>
+                        {TEAM_SLOTS[winnerTeam].map(s => (
+                          <PlayerMark key={s} player={PLAYERS[s]} size={14} tone={theme.bg1} bg={theme.ink} />
+                        ))}
+                      </div>
+                    ) : (
+                      <PlayerMark player={winnerColor} size={20} tone={theme.bg1} bg={theme.ink} />
+                    )}
                   </div>
                 )}
                 <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.3px", color: theme.ink }}>
-                  {isDraw ? "It's a draw!" : `${winnerColor.name} wins!`}
+                  {isDraw ? "It's a draw!" : (winnerTeam !== null ? `${TEAM_NAMES[winnerTeam]} wins!` : `${winnerColor.name} wins!`)}
                 </span>
               </div>
               {!isDraw && <p style={{ position: "relative", fontSize: 12, color: theme.inkMuted, marginTop: 8 }}>Completed {config.linesNeeded} line{config.linesNeeded > 1 ? "s" : ""} of {config.lineLen}</p>}
               {isDraw && (
                 <div style={{ position: "relative", marginTop: 12, display: "flex", justifyContent: "center", gap: 8, flexWrap: "wrap" }}>
-                  {Array.from({ length: config.playerCount }).map((_, i) => (
+                  {teamsOn ? TEAM_SLOTS.map((slots, ti) => (
+                    <div key={ti} style={{
+                      display: "flex", alignItems: "center", gap: 6,
+                      padding: "5px 10px", borderRadius: 10,
+                      background: theme.glassFillSolid,
+                      border: `1px solid ${TEAM_ACCENTS[ti]}`,
+                    }}>
+                      <div style={{ display: "flex", gap: 2 }}>
+                        {slots.map(s => <PlayerMark key={s} player={PLAYERS[s]} size={12} />)}
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: theme.ink }}>{TEAM_NAMES[ti]}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: theme.ink, fontVariantNumeric: "tabular-nums" }}>{scores[slots[0]] || 0}</span>
+                      <span style={{ fontSize: 11, color: theme.inkMuted }}>/ {config.linesNeeded}</span>
+                    </div>
+                  )) : Array.from({ length: config.playerCount }).map((_, i) => (
                     <div key={i} style={{
                       display: "flex", alignItems: "center", gap: 6,
                       padding: "5px 10px", borderRadius: 10,
@@ -1160,15 +1188,21 @@ export default function MegaTicTacToe() {
           ) : (
             <div style={{ display: "flex", alignItems: "center", padding: "10px 16px", gap: 10 }}>
               <button className="btn-hover" onClick={() => { if (isOnline && onlineConn) { onlineConn.close(); setOnlineConn(null); } try { const u = new URL(window.location.href); u.searchParams.delete("room"); window.history.replaceState({}, "", u.toString()); localStorage.removeItem("mtt-last-room"); } catch {} setScreen("setup"); }} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: "var(--textLabel)" }}>‹</button>
-              <div style={{ width: 24, height: 24, borderRadius: 8, background: theme.ink, display: "flex", alignItems: "center", justifyContent: "center", animation: "glassFloat 3s ease-in-out infinite" }}>
+              <div style={{
+                width: 24, height: 24, borderRadius: 8, background: theme.ink,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                animation: "glassFloat 3s ease-in-out infinite",
+                boxShadow: currentTeam !== null ? `0 0 0 1.5px ${TEAM_ACCENTS[currentTeam]}` : undefined,
+              }}>
                 <PlayerMark player={playerColor} size={14} tone={theme.bg1} bg={theme.ink} />
               </div>
               <span key={cp} style={{ fontSize: 15, fontWeight: 600, flex: 1, color: theme.ink, letterSpacing: "-0.02em", animation: "slideUp 0.25s cubic-bezier(0.16,1,0.3,1)" }}>
                 {isOnline ? (() => {
                   const p = onlinePlayers.find(p => p.slot === cp);
                   const nm = p?.name || (cp === onlineSlot ? "You" : "Opponent");
-                  return cp === onlineSlot ? "Your turn" : `${nm}'s turn`;
-                })() : config.ai && cp === 1 ? "AI thinking..." : `${playerColor.name}'s turn`}
+                  const base = cp === onlineSlot ? "Your turn" : `${nm}'s turn`;
+                  return teamsOn ? `${base} · ${TEAM_NAMES[currentTeam]}` : base;
+                })() : config.ai && cp === 1 ? "AI thinking..." : (teamsOn ? `${playerColor.name} · ${TEAM_NAMES[currentTeam]}` : `${playerColor.name}'s turn`)}
               </span>
               <span style={{ fontSize: 12, color: "var(--textLabel)" }}>Turn {turn}</span>
               {isOnline && spectators.length > 0 && (
@@ -1187,7 +1221,47 @@ export default function MegaTicTacToe() {
             </div>
           )}
           <div style={{ display: "flex", gap: 6, padding: "0 16px 10px" }}>
-            {Array.from({ length: config.playerCount }).map((_, i) => {
+            {teamsOn ? TEAM_SLOTS.map((slots, ti) => {
+              const isActive = isReview ? winnerTeam === ti : currentTeam === ti;
+              const accent = TEAM_ACCENTS[ti];
+              return (
+              <div key={ti} style={{
+                flex: 1, display: "flex", alignItems: "center", gap: 8,
+                padding: "6px 10px", borderRadius: 12, transition: "all 0.2s",
+                background: isActive ? theme.inkGhost : theme.glassFill,
+                border: `1.2px solid ${isActive ? accent : `${accent}55`}`,
+                backdropFilter: "blur(14px) saturate(180%)", WebkitBackdropFilter: "blur(14px) saturate(180%)",
+              }}>
+                <div style={{ display: "flex", gap: 2 }}>
+                  {slots.map(s => {
+                    const isCurrent = !isReview && s === cp;
+                    return (
+                      <div key={s} style={{ opacity: isCurrent ? 1 : 0.55, display: "flex" }}>
+                        <PlayerMark player={PLAYERS[s]} size={14} />
+                      </div>
+                    );
+                  })}
+                </div>
+                <span style={{ fontSize: 11, fontWeight: 700, color: accent, letterSpacing: "0.4px", textTransform: "uppercase" }}>
+                  {TEAM_NAMES[ti].replace("Team ", "")}
+                </span>
+                <span style={{
+                  marginLeft: "auto", fontSize: 12, fontWeight: 600,
+                  color: isActive ? theme.ink : theme.inkMuted,
+                  transition: "color 0.3s",
+                  display: "inline-flex", alignItems: "center", fontVariantNumeric: "tabular-nums",
+                }}>
+                  <RollingNumber value={scores[slots[0]] || 0} />/{config.linesNeeded}
+                  {slots.some(s => graceTimers[s]) && (
+                    <span style={{ fontSize: 10, color: "#F25C54", marginLeft: 4, fontWeight: 700 }}>DC</span>
+                  )}
+                  {slots.some(s => forfeitedSlots.includes(s)) && (
+                    <span style={{ fontSize: 10, color: "#999", marginLeft: 4, fontWeight: 700 }}>FF</span>
+                  )}
+                </span>
+              </div>
+              );
+            }) : Array.from({ length: config.playerCount }).map((_, i) => {
               const active = isReview ? i === winner : i === cp;
               return (
               <div key={i} style={{
@@ -1372,7 +1446,7 @@ export default function MegaTicTacToe() {
             <Board board={dBoard} onCellClick={handleClick} lastMove={dLast} lastMoves={replaying ? (dLast ? [dLast] : []) : lastMoves} winCells={dWin}
               currentPlayer={cp} actionMode={pwr.active && pwr.firstDone ? power?.id : null} zoom={zoom} onZoom={setZoom} ghostOwner={isOnline ? onlineSlot : cp}
               blocks={replaying ? [] : blocks} globalTurn={globalTurn} tpSource={pwr.tpSource || null} cursor={cursor}
-              linePickCells={dLinePick} />
+              linePickCells={dLinePick} teams={teamsOn} />
           );
         })()}
 
