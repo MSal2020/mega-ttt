@@ -175,14 +175,29 @@ export default class MegaTTTServer {
   }
 
   handleJoin(conn, data) {
-    // Reclaim slot if a player with this id was previously here
-    const existing = this.players.find(p => p.id === conn.id);
+    // 1) Reclaim by current ws id (live reconnect within same browser session)
+    let existing = this.players.find(p => p.id === conn.id);
+    // 2) Reclaim by per-room rejoin token (browser reload, new tab, post-grace return).
+    //    Only the holder of the original token can reclaim that slot.
+    if (!existing && data.token) {
+      existing = this.players.find(p => p.token === data.token);
+      if (existing) {
+        // Cancel any grace timer keyed by the old id, then rebind to new ws id
+        const oldTimer = this.graceTimers.get(existing.id);
+        if (oldTimer) { clearTimeout(oldTimer); this.graceTimers.delete(existing.id); }
+        existing.id = conn.id;
+      }
+    }
     if (existing) {
       existing.disconnected = false;
       existing.forfeited = false;
+      // Optional name update on reclaim
+      if (typeof data.name === "string" && data.name.trim()) {
+        existing.name = data.name.slice(0, 20);
+      }
       const timer = this.graceTimers.get(conn.id);
       if (timer) { clearTimeout(timer); this.graceTimers.delete(conn.id); }
-      conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: existing.slot }));
+      conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: existing.slot, spectator: !!existing.spectator }));
       if (existing.spectator) {
         this.broadcast({ type: "spectator-joined", name: existing.name });
       } else {
@@ -195,34 +210,33 @@ export default class MegaTTTServer {
     // (no slot stealing).
     if (data.asSpectator || this.phase === "playing" || this.phase === "review") {
       const name = (data.name || "Spectator").slice(0, 20);
-      this.players.push({ id: conn.id, name, slot: -1, disconnected: false, spectator: true });
+      this.players.push({ id: conn.id, token: data.token || null, name, slot: -1, disconnected: false, spectator: true });
       conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: -1, spectator: true }));
       this.broadcast({ type: "spectator-joined", name });
       return;
     }
     // Cap = host's chosen playerCount (defaults to 4 before config is set)
     const cap = this.config?.playerCount || 4;
-    const activeCount = this.players.filter(p => !p.disconnected && !p.spectator).length;
+    const activeCount = this.players.filter(p => !p.disconnected && !p.spectator && !p.forfeited).length;
     if (activeCount >= cap) {
       // Lobby is full — reject the join so the client can show a clear error
       conn.send(JSON.stringify({ type: "error", message: "Room is full" }));
       return;
     }
-    // Take the lowest free slot (handles freed/reordered slots)
-    // Reserved slots include all seated players (even disconnected ones) to prevent slot stealing
-    const takenSlots = new Set(this.players.filter(p => !p.spectator && !p.forfeited).map(p => p.slot));
+    // Reserve every seated slot — including disconnected and forfeited players.
+    // Forfeited slots stay reserved for the original token-holder; only they
+    // can reclaim via the token path above. New joiners must wait or pick a
+    // different slot.
+    const takenSlots = new Set(this.players.filter(p => !p.spectator).map(p => p.slot));
     let slot = 0;
     while (takenSlots.has(slot)) slot++;
     if (slot >= cap) {
-      // All cap slots are reserved by seated (possibly disconnected) players.
-      // Reject so we don't seat a slot beyond the configured player count.
+      // Every slot is reserved (some by token-holders who haven't returned).
       conn.send(JSON.stringify({ type: "error", message: "Room is full" }));
       return;
     }
     const name = (data.name || `Player ${slot + 1}`).slice(0, 20);
-    // Only remove forfeited players occupying this slot
-    this.players = this.players.filter(p => p.slot !== slot || !p.forfeited);
-    this.players.push({ id: conn.id, name, slot, disconnected: false });
+    this.players.push({ id: conn.id, token: data.token || null, name, slot, disconnected: false });
 
     conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: slot }));
     this.broadcast({ type: "player-joined", slot, name, playerCount: this.activePlayerCount() });
@@ -853,6 +867,9 @@ export default class MegaTTTServer {
       this.graceTimers.delete(conn.id);
     }
     if (player.forfeited) return;
+    // Voluntary forfeit: player is still connected, so mark as disconnected
+    // so finalizeDisconnect() doesn't bail out at its reconnected-in-time guard.
+    player.disconnected = true;
     this.finalizeDisconnect(conn.id);
   }
 

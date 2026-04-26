@@ -12,14 +12,26 @@ function resolvePartykitHost() {
 
 const PARTYKIT_HOST = resolvePartykitHost();
 
+function loadOrCreate(key) {
+  try {
+    let v = localStorage.getItem(key);
+    if (!v) {
+      v = (crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now().toString(36));
+      localStorage.setItem(key, v);
+    }
+    return v;
+  } catch {
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+}
+
 export function createConnection(roomCode, onMessage) {
   const room = roomCode.toUpperCase();
-  // Stable client ID so server can reclaim slot on reconnect
-  let clientId = localStorage.getItem("mtt-client-id");
-  if (!clientId) {
-    clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    localStorage.setItem("mtt-client-id", clientId);
-  }
+  // Stable per-browser client ID so server can reclaim slot during a live ws session
+  const clientId = loadOrCreate("mtt-client-id");
+  // Per-room rejoin token: only the original player can reclaim their slot
+  // after a disconnect/grace expiry. Stored separately per room code.
+  const roomToken = loadOrCreate(`mtt-token-${room}`);
   const ws = new PartySocket({
     host: PARTYKIT_HOST,
     room,
@@ -40,7 +52,7 @@ export function createConnection(roomCode, onMessage) {
   // Re-send join on every (re)connect so server can restore slot/spectator
   ws.addEventListener("open", () => {
     if (openedOnce && lastName) {
-      const msg = { type: "join", name: lastName };
+      const msg = { type: "join", name: lastName, token: roomToken };
       if (lastAsSpectator) msg.asSpectator = true;
       ws.send(JSON.stringify(msg));
     }
@@ -56,12 +68,13 @@ export function createConnection(roomCode, onMessage) {
   return {
     ws,
     clientId,
+    roomToken,
     isOpen() { return ws.readyState === 1; },
     send(msg) { return send(msg); },
     join(name, opts = {}) {
       lastName = name;
       lastAsSpectator = !!opts.asSpectator;
-      const msg = { type: "join", name };
+      const msg = { type: "join", name, token: roomToken };
       if (lastAsSpectator) msg.asSpectator = true;
       return send(msg);
     },

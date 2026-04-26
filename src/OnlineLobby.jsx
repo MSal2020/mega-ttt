@@ -5,7 +5,7 @@ import { useTheme } from "./theme.js";
 import { PlayerMark, Collapse } from "./widgets.jsx";
 import { HeroShapeGrid, LobbyPresence } from "./screens.jsx";
 
-export function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
+export function OnlineLobby({ onBack, onGameStart }) {
   const t = useTheme();
   const lobbyDebugEnabled = useMemo(() => {
     try {
@@ -290,9 +290,8 @@ export function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
         )}
         <div style={{ display: "flex", flexDirection: "column", justifyContent: isWide ? "center" : "flex-start", width: "100%", minWidth: 0, maxWidth: isWide ? 460 : "none", marginLeft: isWide ? 0 : "auto", marginRight: isWide ? 0 : "auto" }}>
         {!isWide && (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", justifyContent: "flex-start", alignItems: "center" }}>
             <button className="btn-hover" onClick={leaveLobby} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: t.inkMuted }}>←</button>
-            <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7 }}>{dark ? "☀" : "☾"}</button>
           </div>
         )}
         {!isWide && tab === "menu" && !inRoom && (
@@ -310,11 +309,6 @@ export function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
         )}
         {!isWide && (tab !== "menu" || inRoom) && (
           <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.03em", textAlign: "center", color: t.ink, marginTop: 8, marginBottom: 0 }}>Play Online</h1>
-        )}
-        {isWide && (
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
-            <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7 }}>{dark ? "☀" : "☾"}</button>
-          </div>
         )}
 
         {error && (
@@ -558,31 +552,6 @@ export function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                     </button>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* Your name (editable in-lobby) — hidden for spectators */}
-            {!isSpectator && (
-              <div style={{ marginBottom: 20 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: t.inkMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Your Name</div>
-                <input
-                  type="text"
-                  placeholder="Enter your name"
-                  maxLength={20}
-                  value={playerName}
-                  onChange={e => {
-                    const v = e.target.value;
-                    setPlayerName(v);
-                    localStorage.setItem("mtt-player-name", v);
-                    const trimmed = v.trim();
-                    if (conn && trimmed) conn.rename(trimmed);
-                  }}
-                  style={{
-                    width: "100%", padding: "8px 12px", borderRadius: 12, border: `0.5px solid ${t.hair}`,
-                    fontSize: 14, fontWeight: 500, fontFamily: "inherit", background: t.glassFillSolid, color: t.ink,
-                    outline: "none", boxSizing: "border-box",
-                  }}
-                />
               </div>
             )}
 
