@@ -16,14 +16,47 @@ const GRACE_MS = 10_000;
 export default class MegaTTTServer {
   constructor(room) {
     this.room = room;
+    this._host = null;   // captured from incoming requests; needed in onAlarm
+    this._roomId = null; // cache room.id; PartyKit blocks access in onAlarm
+    try { this._roomId = room?.id || null; } catch {}
     this.reset();
+    this._restoreEnv();
+  }
+
+  async _restoreEnv() {
+    try {
+      const [h, id] = await Promise.all([
+        this.room?.storage?.get?.("pk-host"),
+        this.room?.storage?.get?.("pk-room-id"),
+      ]);
+      if (h && !this._host) this._host = h;
+      if (id && !this._roomId) this._roomId = id;
+    } catch {}
+  }
+
+  _captureHost(ctxOrReq) {
+    try {
+      const req = ctxOrReq?.request || ctxOrReq;
+      if (!req?.url) return;
+      const u = new URL(req.url);
+      const proto = u.protocol === "wss:" ? "https:" : u.protocol === "ws:" ? "http:" : u.protocol;
+      const host = `${proto}//${u.host}`;
+      if (host !== this._host) {
+        this._host = host;
+        this.room?.storage?.put?.("pk-host", host);
+      }
+      // Also persist room.id while we're in a context where it's accessible.
+      if (!this._roomId) {
+        try { this._roomId = this.room?.id || null; } catch {}
+        if (this._roomId) this.room?.storage?.put?.("pk-room-id", this._roomId);
+      }
+    } catch {}
   }
 
   reset() {
-    if (this.listingInterval) {
-      clearInterval(this.listingInterval);
-      this.listingInterval = null;
-    }
+    // Cancel any pending listing-heartbeat alarm. Fire-and-forget; if storage
+    // isn't available (test envs) just skip.
+    try { this.room?.storage?.deleteAlarm?.(); } catch {}
     this.players = [];       // [{ id, name, slot }]
     this.phase = "lobby";    // lobby | playing | review
     this.rematchVotes = new Set(); // slots that have voted for rematch
@@ -48,7 +81,8 @@ export default class MegaTTTServer {
     this.graceTimers = new Map();
   }
 
-  onConnect(conn) {
+  onConnect(conn, ctx) {
+    this._captureHost(ctx);
     // Cancel grace timer if reconnecting
     const timer = this.graceTimers.get(conn.id);
     if (timer) {
@@ -156,8 +190,10 @@ export default class MegaTTTServer {
       }
       return;
     }
-    // During an active game or review, new joiners can only spectate (no slot stealing)
-    if (this.phase === "playing" || this.phase === "review") {
+    // Explicit spectator opt-in (Spectate button) — works in any phase.
+    // Also: during an active game or review, new joiners can only spectate
+    // (no slot stealing).
+    if (data.asSpectator || this.phase === "playing" || this.phase === "review") {
       const name = (data.name || "Spectator").slice(0, 20);
       this.players.push({ id: conn.id, name, slot: -1, disconnected: false, spectator: true });
       conn.send(JSON.stringify({ type: "room-state", ...this.getState(), you: -1, spectator: true }));
@@ -279,14 +315,16 @@ export default class MegaTTTServer {
   async publishListing(source = "unknown") {
     const hasSeatedPlayers = this.players.filter(p => !p.spectator).length > 0;
     const shouldList = !!(this.config?.public && hasSeatedPlayers);
-    this.syncListingHeartbeat(shouldList);
-    const parties = this.room.context?.parties || this.room.parties;
-    if (!parties?.lobby) return;
-    const stub = parties.lobby.get("public");
+    await this.syncListingHeartbeat(shouldList);
     const host = this.players.find(p => p.slot === 0);
+    let roomId = this._roomId;
+    if (!roomId) {
+      try { roomId = this.room?.id; } catch {}
+    }
+    if (!roomId) return; // can't publish without an id
     const payload = {
       action: shouldList ? "set" : "remove",
-      code: this.room.id,
+      code: roomId,
       source,
       hostName: host?.name || "Host",
       players: this.activePlayerCount(),
@@ -298,8 +336,28 @@ export default class MegaTTTServer {
       isPublic: !!this.config?.public,
       phase: this.phase,
     };
+    // Use direct fetch instead of parties.lobby stub. The stub approach is
+    // forbidden inside `onAlarm` (PartyKit limitation), so we standardise on
+    // plain fetch in all paths. Host is captured from incoming requests.
+    if (!this._host) {
+      // Best effort: try parties stub once if available (warm path before
+      // any alarm has fired). Used for the very first publish.
+      try {
+        const parties = this.room.context?.parties;
+        const stub = parties?.lobby?.get?.("public");
+        if (stub) {
+          await stub.fetch({
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          return;
+        }
+      } catch {}
+      return;
+    }
     try {
-      await stub.fetch({
+      await fetch(`${this._host}/parties/lobby/public`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
@@ -307,23 +365,34 @@ export default class MegaTTTServer {
     } catch {}
   }
 
-  syncListingHeartbeat(shouldHeartbeat) {
-    if (!shouldHeartbeat) {
-      if (this.listingInterval) {
-        clearInterval(this.listingInterval);
-        this.listingInterval = null;
+  async syncListingHeartbeat(shouldHeartbeat) {
+    // Heartbeat uses Durable Object alarms instead of setInterval. Alarms
+    // survive hibernation (which Cloudflare does aggressively even with
+    // active WebSockets), wake the DO to fire publishListing, and the
+    // alarm handler reschedules itself. setInterval was unreliable in
+    // production because timers stop when the DO hibernates.
+    const storage = this.room?.storage;
+    if (!storage?.setAlarm) return;
+    try {
+      if (!shouldHeartbeat) {
+        await storage.deleteAlarm();
+        return;
       }
-      return;
-    }
-    if (this.listingInterval) return;
-    // Keep lobbies discoverable across lobby worker cold starts. We DO want
-    // this timer to keep the room worker alive — otherwise the room DO can
-    // hibernate, the heartbeat stops, and the lobby stops seeing this room.
-    // The trade-off is one timer per public room; cheap for indie traffic,
-    // worth it for reliable discovery.
-    this.listingInterval = setInterval(() => {
-      this.publishListing("heartbeat");
-    }, LISTING_HEARTBEAT_MS);
+      const existing = await storage.getAlarm();
+      if (existing && existing > Date.now()) return; // already scheduled
+      await storage.setAlarm(Date.now() + LISTING_HEARTBEAT_MS);
+    } catch {}
+  }
+
+  async onAlarm() {
+    // Wake-up trigger from a scheduled alarm. Decide if we still need to
+    // keep the listing alive; if so, publish and reschedule. Otherwise the
+    // alarm chain stops on its own.
+    const hasSeatedPlayers = this.players.filter(p => !p.spectator).length > 0;
+    const shouldList = !!(this.config?.public && hasSeatedPlayers);
+    if (!shouldList) return;
+    await this.publishListing("alarm");
+    // publishListing → syncListingHeartbeat will schedule the next alarm.
   }
 
   handleStart(conn) {

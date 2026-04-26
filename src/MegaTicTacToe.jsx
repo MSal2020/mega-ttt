@@ -674,7 +674,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   const usedPowers = powers.slice(0, playerCount);
   const hasDupes = mode === "powers" && new Set(usedPowers).size < usedPowers.length;
 
-  const connectToRoom = useCallback((code, isHost) => {
+  const connectToRoom = useCallback((code, isHost, asSpectator = false) => {
     setRoomCode(code);
     setStatus("connecting");
     setError(null);
@@ -732,8 +732,8 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
     });
 
     // Join once immediately; PartySocket queues this until the socket opens.
-    const name = (playerName || "").trim() || (isHost ? "Host" : "Guest");
-    connection.join(name);
+    const name = (playerName || "").trim() || (isHost ? "Host" : asSpectator ? "Spectator" : "Guest");
+    connection.join(name, { asSpectator });
 
     connection.ws.addEventListener("open", () => {
       setStatus("connected");
@@ -1016,7 +1016,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                         </div>
                       </div>
                       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                        <button className="btn-hover" disabled={!canJoin} onClick={() => { if (!canJoin) return; setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
+                        <button className="btn-hover" disabled={!canJoin} onClick={() => { if (!canJoin) return; setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false, false); }} style={{
                           padding: "6px 12px", borderRadius: 10, border: `0.5px solid ${canJoin ? t.ink : t.hair}`, fontSize: 13, fontWeight: 600,
                           cursor: canJoin ? "pointer" : "not-allowed",
                           background: canJoin ? t.ink : "transparent",
@@ -1025,7 +1025,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
                           opacity: canJoin ? 1 : 0.55,
                           transition: "all 0.15s",
                         }}>{full ? "Full" : "Join"}</button>
-                        <button className="btn-hover" onClick={() => { setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
+                        <button className="btn-hover" onClick={() => { setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false, true); }} style={{
                           padding: "6px 12px", borderRadius: 10, border: `0.5px solid ${t.hairStrong}`, fontSize: 13, fontWeight: 500,
                           cursor: "pointer",
                           background: t.glassFill, color: t.ink,

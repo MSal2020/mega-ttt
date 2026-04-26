@@ -27,6 +27,7 @@ export function createConnection(roomCode, onMessage) {
   });
 
   let lastName = null;
+  let lastAsSpectator = false;
   let openedOnce = false;
 
   ws.addEventListener("message", (e) => {
@@ -36,9 +37,13 @@ export function createConnection(roomCode, onMessage) {
     } catch {}
   });
 
-  // Re-send join on every (re)connect so server can restore slot
+  // Re-send join on every (re)connect so server can restore slot/spectator
   ws.addEventListener("open", () => {
-    if (openedOnce && lastName) ws.send(JSON.stringify({ type: "join", name: lastName }));
+    if (openedOnce && lastName) {
+      const msg = { type: "join", name: lastName };
+      if (lastAsSpectator) msg.asSpectator = true;
+      ws.send(JSON.stringify(msg));
+    }
     openedOnce = true;
   });
 
@@ -53,7 +58,13 @@ export function createConnection(roomCode, onMessage) {
     clientId,
     isOpen() { return ws.readyState === 1; },
     send(msg) { return send(msg); },
-    join(name) { lastName = name; return send({ type: "join", name }); },
+    join(name, opts = {}) {
+      lastName = name;
+      lastAsSpectator = !!opts.asSpectator;
+      const msg = { type: "join", name };
+      if (lastAsSpectator) msg.asSpectator = true;
+      return send(msg);
+    },
     rename(name) { lastName = name; return send({ type: "rename", name }); },
     setConfig(config) { return send({ type: "config", config }); },
     start() { return send({ type: "start" }); },
