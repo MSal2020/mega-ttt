@@ -316,12 +316,14 @@ export default class MegaTTTServer {
       return;
     }
     if (this.listingInterval) return;
-    // Keep lobbies discoverable across lobby worker cold starts.
+    // Keep lobbies discoverable across lobby worker cold starts. We DO want
+    // this timer to keep the room worker alive — otherwise the room DO can
+    // hibernate, the heartbeat stops, and the lobby stops seeing this room.
+    // The trade-off is one timer per public room; cheap for indie traffic,
+    // worth it for reliable discovery.
     this.listingInterval = setInterval(() => {
       this.publishListing("heartbeat");
     }, LISTING_HEARTBEAT_MS);
-    // Don't keep the room worker alive solely because of this timer.
-    if (typeof this.listingInterval.unref === "function") this.listingInterval.unref();
   }
 
   handleStart(conn) {

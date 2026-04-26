@@ -991,32 +991,51 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" }}>
-                {publicRooms.map(r => (
-                  <div key={r.code} style={{
-                    display: "flex", alignItems: "center", gap: 10,
-                    padding: "10px 12px", borderRadius: 12, background: t.glassFillSolid, border: `0.5px solid ${t.hair}`,
-                  }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: t.ink, letterSpacing: 2 }}>{r.code}</div>
-                      <div style={{ fontSize: 11, color: t.inkMuted, marginTop: 2 }}>
-                        {r.hostName} · {r.players}/{r.playerCount} · {r.gridSize}×{r.gridSize}
-                        {r.mode === "powers" && " · powers"}
-                        {r.teams && " · teams"}
-                        {r.phase !== "lobby" && ` · ${r.phase}`}
-                        {r.spectators > 0 && ` · ${r.spectators} watching`}
+                {publicRooms.map(r => {
+                  const phase = r.phase || "lobby";
+                  const inLobby = phase === "lobby";
+                  const full = inLobby && r.players >= r.playerCount;
+                  const canJoin = inLobby && !full;
+                  const tagPieces = [
+                    `${r.players}/${r.playerCount}`,
+                    `${r.gridSize}×${r.gridSize}`,
+                    r.mode === "powers" ? "powers" : null,
+                    r.teams ? "teams" : null,
+                    !inLobby ? phase : null,
+                    r.spectators > 0 ? `${r.spectators} watching` : null,
+                  ].filter(Boolean);
+                  return (
+                    <div key={r.code} style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "10px 12px", borderRadius: 12, background: t.glassFillSolid, border: `0.5px solid ${t.hair}`,
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: t.ink, letterSpacing: 2 }}>{r.code}</div>
+                        <div style={{ fontSize: 11, color: t.inkMuted, marginTop: 2 }}>
+                          {r.hostName || "Host"} · {tagPieces.join(" · ")}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                        <button className="btn-hover" disabled={!canJoin} onClick={() => { if (!canJoin) return; setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
+                          padding: "6px 12px", borderRadius: 10, border: `0.5px solid ${canJoin ? t.ink : t.hair}`, fontSize: 13, fontWeight: 600,
+                          cursor: canJoin ? "pointer" : "not-allowed",
+                          background: canJoin ? t.ink : "transparent",
+                          color: canJoin ? (t.mode === "dark" ? t.bg1 : "#FAF7F0") : t.inkFaint,
+                          fontFamily: "inherit",
+                          opacity: canJoin ? 1 : 0.55,
+                          transition: "all 0.15s",
+                        }}>{full ? "Full" : "Join"}</button>
+                        <button className="btn-hover" onClick={() => { setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
+                          padding: "6px 12px", borderRadius: 10, border: `0.5px solid ${t.hairStrong}`, fontSize: 13, fontWeight: 500,
+                          cursor: "pointer",
+                          background: t.glassFill, color: t.ink,
+                          fontFamily: "inherit",
+                          backdropFilter: "blur(14px) saturate(180%)", WebkitBackdropFilter: "blur(14px) saturate(180%)",
+                        }}>Spectate</button>
                       </div>
                     </div>
-                    <button className="btn-hover" disabled={r.phase === "lobby" && r.players >= r.playerCount} onClick={() => { setJoinCode(r.code); setTab("join"); connectToRoom(r.code, false); }} style={{
-                      padding: "6px 14px", borderRadius: 10, border: `0.5px solid ${t.hairStrong}`, fontSize: 13, fontWeight: 600,
-                      cursor: r.phase === "lobby" && r.players >= r.playerCount ? "not-allowed" : "pointer",
-                      background: r.phase !== "lobby" || r.players >= r.playerCount ? t.glassFill : t.ink,
-                      color: r.phase !== "lobby" || r.players >= r.playerCount ? t.ink : (t.mode === "dark" ? t.bg1 : "#FAF7F0"),
-                      fontFamily: "inherit",
-                      backdropFilter: "blur(14px) saturate(180%)", WebkitBackdropFilter: "blur(14px) saturate(180%)",
-                      opacity: r.phase === "lobby" && r.players >= r.playerCount ? 0.5 : 1,
-                    }}>{r.phase !== "lobby" ? "Spectate" : (r.players >= r.playerCount ? "Full" : "Join")}</button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             <button className="btn-hover" onClick={() => setTab("menu")} style={{

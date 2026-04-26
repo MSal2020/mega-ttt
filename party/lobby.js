@@ -21,8 +21,12 @@ export default class Lobby {
       const saved = await storage.get(ROOMS_STORAGE_KEY);
       if (!Array.isArray(saved)) return;
       this.rooms = new Map(saved.map((r) => [r.code, r]));
-      const pruned = this.pruneStaleRooms("startup");
-      if (pruned.length > 0) this.broadcastDebug({ event: "prune", source: "startup", pruned });
+      // No pruning on startup. If a room is genuinely dead the host's
+      // heartbeat will simply stop and the next publish-driven prune
+      // (in onRequest / broadcastList) will clean it up. Pruning here
+      // briefly empties the list every cold start, which made rooms
+      // disappear for any viewer connecting in the gap before the host's
+      // next 5s heartbeat refreshed them.
     } catch {}
   }
 
@@ -115,8 +119,10 @@ export default class Lobby {
 
   async onConnect(conn) {
     await this.ready;
-    this.pruneStaleRooms("connect");
-    await this.persistRooms();
+    // Send the full known list immediately. We deliberately do NOT prune here
+    // — pruning is driven by publish/heartbeat in onRequest. Pruning on every
+    // connect raced with hosts whose DOs had hibernated for a moment, making
+    // their rooms vanish for any viewer that connected in the gap.
     conn.send(JSON.stringify({ type: "rooms", rooms: [...this.rooms.values()] }));
     conn.send(JSON.stringify({
       type: DEBUG_EVENT_TYPE,
