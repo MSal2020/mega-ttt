@@ -20,7 +20,7 @@ export default class MegaTTTServer {
     this._roomId = null; // cache room.id; PartyKit blocks access in onAlarm
     try { this._roomId = room?.id || null; } catch {}
     this.reset();
-    this._restoreEnv();
+    this._envReady = this._restoreEnv();
   }
 
   async _restoreEnv() {
@@ -213,6 +213,12 @@ export default class MegaTTTServer {
     const takenSlots = new Set(this.players.filter(p => !p.spectator && !p.forfeited).map(p => p.slot));
     let slot = 0;
     while (takenSlots.has(slot)) slot++;
+    if (slot >= cap) {
+      // All cap slots are reserved by seated (possibly disconnected) players.
+      // Reject so we don't seat a slot beyond the configured player count.
+      conn.send(JSON.stringify({ type: "error", message: "Room is full" }));
+      return;
+    }
     const name = (data.name || `Player ${slot + 1}`).slice(0, 20);
     // Only remove forfeited players occupying this slot
     this.players = this.players.filter(p => p.slot !== slot || !p.forfeited);
@@ -313,6 +319,8 @@ export default class MegaTTTServer {
   }
 
   async publishListing(source = "unknown") {
+    // Ensure persisted host/roomId are restored before we try to publish.
+    if (this._envReady) { try { await this._envReady; } catch {} }
     const hasSeatedPlayers = this.players.filter(p => !p.spectator).length > 0;
     const shouldList = !!(this.config?.public && hasSeatedPlayers);
     await this.syncListingHeartbeat(shouldList);
@@ -574,7 +582,7 @@ export default class MegaTTTServer {
     );
     this.scores = r.scores;
 
-    while (r.pending) {
+    if (r.pending) {
       this.pendingLinePick = { pending: r.pending, resume, extra };
       this.broadcastState("pending-line");
       return;
@@ -690,11 +698,7 @@ export default class MegaTTTServer {
       return;
     }
 
-    const next = (this.cp + 1) % this.config.playerCount;
-    const nextGT = this.globalTurn + 1;
-    const nextRound = next === 0 ? this.turn + 1 : this.turn;
-
-    if (this.cooldowns[next] > 0) this.cooldowns[next]--;
+    const nextRound = ((this.cp + 1) % this.config.playerCount) === 0 ? this.turn + 1 : this.turn;
 
     this.board = revealGhosts(this.board, nextRound);
     const s2 = scoreAndMark(this.board, this.config.playerCount, this.config.lineLen, this.scores, this.teamsArg());
@@ -712,6 +716,7 @@ export default class MegaTTTServer {
   advanceTurnFromEndTurn() {
     let next = (this.cp + 1) % this.config.playerCount;
     let nextGT = this.globalTurn + 1;
+    let crossedZero = next === 0;
 
     // Skip forfeited players
     let guard = 0;
@@ -720,16 +725,21 @@ export default class MegaTTTServer {
       if (p?.forfeited) {
         next = (next + 1) % this.config.playerCount;
         nextGT++;
+        if (next === 0) crossedZero = true;
         guard++;
       } else {
         break;
       }
     }
 
+    // Decrement cooldown for the player whose turn is actually starting
+    // (must run after forfeit skipping so we don't tick a forfeited slot).
+    if (this.cooldowns[next] > 0) this.cooldowns[next]--;
+
     this.playerTurns[this.cp] = (this.playerTurns[this.cp] || 0) + 1;
     this.cp = next;
     this.globalTurn = nextGT;
-    if (next === 0) this.turn++;
+    if (crossedZero) this.turn++;
     this.pwr = { active: false, used: false, firstDone: false, tpSource: null };
     this.blocks = pruneBlocks(this.blocks, nextGT);
     this.timeLeft = this.config.timer || 0;

@@ -80,9 +80,11 @@ export function createConnection(roomCode, onMessage) {
 
 // Subscribe to the public-rooms list from the lobby party.
 // onRooms(list) is called on every update.
+// Optional onStatus(state) is called with "connected" | "reconnecting" | "error".
 export function subscribeToLobby(arg) {
   const onRooms = typeof arg === "function" ? arg : arg?.onRooms;
   const onDebug = typeof arg === "function" ? null : arg?.onDebug;
+  const onStatus = typeof arg === "function" ? null : arg?.onStatus;
   const ws = new PartySocket({ host: PARTYKIT_HOST, party: "lobby", room: "public" });
   ws.addEventListener("message", (e) => {
     try {
@@ -91,6 +93,11 @@ export function subscribeToLobby(arg) {
       if (data.type === "lobby-debug" && onDebug) onDebug(data);
     } catch {}
   });
+  if (onStatus) {
+    ws.addEventListener("open", () => onStatus("connected"));
+    ws.addEventListener("close", () => onStatus("reconnecting"));
+    ws.addEventListener("error", () => onStatus("error"));
+  }
   return { ws, close() { ws.close(); } };
 }
 

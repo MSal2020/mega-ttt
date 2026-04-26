@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postinstall": "node patch-partykit-script.cjs || true"
   },
   "dependencies": {
     "partysocket": "^1.1.16",
