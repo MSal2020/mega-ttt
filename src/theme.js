@@ -19,6 +19,7 @@ export const THEMES = {
     glassShadow: "0 1px 0 rgba(255,255,255,0.7) inset, 0 12px 34px rgba(60,40,20,0.08), 0 2px 6px rgba(60,40,20,0.04)",
     hair: "rgba(26,23,20,0.08)",
     hairStrong: "rgba(26,23,20,0.16)",
+    cardGlow: "rgba(255,250,240,0.03)",
     accentInk: "#1A1714", accentOnInk: "#FBF8F1",
     focus: "rgba(26,23,20,0.22)",
 
@@ -46,6 +47,7 @@ export const THEMES = {
     glassShadow: "0 1px 0 rgba(255,250,240,0.08) inset, 0 14px 40px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.3)",
     hair: "rgba(245,240,230,0.1)",
     hairStrong: "rgba(245,240,230,0.2)",
+    cardGlow: "rgba(255,250,240,0.07)",
     accentInk: "#F5F0E6", accentOnInk: "#1B1915",
     focus: "rgba(245,240,230,0.3)",
 

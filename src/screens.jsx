@@ -29,7 +29,7 @@ export function StatsScreen({ onBack }) {
     <>
       <div className="glass-bg" />
       <div style={{ position: "relative", zIndex: 1, minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none" }}>
-        <div style={{
+        <div className="glass-card-glow" style={{
           background: t.glassFill, backdropFilter: "blur(22px) saturate(180%)", WebkitBackdropFilter: "blur(22px) saturate(180%)",
           border: `0.5px solid ${t.glassBorder}`, boxShadow: t.glassShadow,
           borderRadius: 22, padding: "32px 28px", width: "100%", maxWidth: 420,
@@ -163,7 +163,7 @@ export function SettingsScreen({ onBack, onReplayTutorial, dark, setDark }) {
     <>
       <div className="glass-bg" />
       <div style={{ position: "relative", zIndex: 1, minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, userSelect: "none" }}>
-        <div style={{
+        <div className="glass-card-glow" style={{
           background: t.glassFill, backdropFilter: "blur(22px) saturate(180%)", WebkitBackdropFilter: "blur(22px) saturate(180%)",
           border: `0.5px solid ${t.glassBorder}`, boxShadow: t.glassShadow,
           borderRadius: 22, padding: "28px 24px", width: "100%", maxWidth: 460,

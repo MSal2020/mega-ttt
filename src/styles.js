@@ -12,11 +12,18 @@ export const css = `
   .glass-bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
     background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%); }
   .glass-bg::before, .glass-bg::after { content: ''; position: absolute; border-radius: 50%;
-    filter: blur(40px); pointer-events: none; }
+    filter: blur(40px); pointer-events: none; will-change: transform; }
   .glass-bg::before { top: -8%; right: -18%; width: 70%; height: 60%;
-    background: radial-gradient(closest-side, var(--bgBlob) 0%, transparent 70%); opacity: 0.8; }
+    background: radial-gradient(closest-side, var(--bgBlob) 0%, transparent 70%); opacity: 0.8;
+    animation: blobDrift1 28s ease-in-out infinite; }
   .glass-bg::after { bottom: -12%; left: -20%; width: 80%; height: 55%;
-    background: radial-gradient(closest-side, var(--bgBlob2) 0%, transparent 72%); opacity: 0.66; }
+    background: radial-gradient(closest-side, var(--bgBlob2) 0%, transparent 72%); opacity: 0.66;
+    animation: blobDrift2 35s ease-in-out infinite; }
+  @keyframes blobDrift1 { 0%, 100% { transform: translate(0, 0) scale(1); } 25% { transform: translate(22px, -28px) scale(1.04); } 50% { transform: translate(-12px, 18px) scale(0.97); } 75% { transform: translate(18px, 14px) scale(1.02); } }
+  @keyframes blobDrift2 { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(-24px, 22px) scale(0.96); } 66% { transform: translate(20px, -18px) scale(1.03); } }
+  .glass-card-glow { position: relative; }
+  .glass-card-glow::before { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: radial-gradient(at top, var(--cardGlow), transparent 50%); z-index: 1; }
   .glass-card { background: var(--glassFill); backdrop-filter: blur(22px) saturate(180%);
     -webkit-backdrop-filter: blur(22px) saturate(180%); border: 0.5px solid var(--glassBorder);
     box-shadow: var(--glassShadow); border-radius: 18px; }
