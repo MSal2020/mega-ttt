@@ -6,7 +6,7 @@ import {
 } from "../lib/gameLogic.js";
 
 const LISTING_HEARTBEAT_MS = 5_000;
-const GRACE_MS = 10_000;
+const GRACE_MS = 25_000;
 
 /**
  * PartyKit server for Mega Tic Tac Toe online multiplayer.

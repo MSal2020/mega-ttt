@@ -1114,42 +1114,54 @@ export default function MegaTicTacToe() {
         {isReview && !isDraw && winnerColor && <Confetti color={confettiColor} />}
 
         {/* Header */}
-        <div style={{ background: theme.glassFill, backdropFilter: "blur(22px) saturate(180%)", WebkitBackdropFilter: "blur(22px) saturate(180%)", borderBottom: `0.5px solid ${theme.hair}`, transition: "background 0.3s" }}>
+        <div style={{ background: isReview ? theme.glassFillStrong : theme.glassFill, backdropFilter: "blur(22px) saturate(180%)", WebkitBackdropFilter: "blur(22px) saturate(180%)", borderBottom: `0.5px solid ${theme.hair}`, transition: "background 0.3s", position: "relative", overflow: "hidden" }}>
+          {/* Review backdrop: team-color radial glow + shine sweep — span the full header so banner + chip strip share one celebratory surface */}
+          {isReview && winnerColor && (
+            <div style={{
+              position: "absolute", top: -40, left: "50%", transform: "translateX(-50%)",
+              width: "140%", height: "240%", borderRadius: "50%",
+              background: winnerTeam !== null
+                ? `radial-gradient(closest-side, ${TEAM_ACCENTS[winnerTeam]}33, transparent 65%)`
+                : `radial-gradient(closest-side, ${theme.inkGhost}, transparent 65%)`,
+              pointerEvents: "none",
+              animation: "popIn 0.5s cubic-bezier(0.34,1.56,0.64,1)",
+            }} />
+          )}
+          {isReview && !isDraw && (
+            <div style={{
+              position: "absolute", top: 0, left: 0, width: "40%", height: "100%",
+              background: `linear-gradient(100deg, transparent 0%, ${theme.inkGhost} 50%, transparent 100%)`,
+              animation: "bannerShine 1.6s ease-out 0.3s",
+              pointerEvents: "none",
+            }} />
+          )}
           {isReview ? (
             <div style={{
-              padding: "18px 16px", textAlign: "center", animation: "bannerSlide 0.5s cubic-bezier(0.34,1.56,0.64,1)",
-              background: theme.glassFillStrong,
-              position: "relative", overflow: "hidden",
+              padding: "20px 16px 12px", textAlign: "center", animation: "bannerSlide 0.5s cubic-bezier(0.34,1.56,0.64,1)",
+              position: "relative",
             }}>
-              {!isDraw && (
-                <div style={{
-                  position: "absolute", top: 0, left: 0, width: "40%", height: "100%",
-                  background: `linear-gradient(100deg, transparent 0%, ${theme.inkGhost} 50%, transparent 100%)`,
-                  animation: "bannerShine 1.6s ease-out 0.3s",
-                  pointerEvents: "none",
-                }} />
-              )}
               <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
                 {winnerColor && (
                   <div style={{
-                    width: 32, height: 32, borderRadius: 10, background: theme.ink,
+                    width: 36, height: 36, borderRadius: 12, background: theme.ink,
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    boxShadow: winnerTeam !== null ? `0 2px 12px ${TEAM_ACCENTS[winnerTeam]}66` : `0 2px 12px ${theme.inkGhost}`,
+                    boxShadow: winnerTeam !== null
+                      ? `0 4px 18px ${TEAM_ACCENTS[winnerTeam]}80, 0 0 0 1.5px ${TEAM_ACCENTS[winnerTeam]}`
+                      : `0 4px 18px ${theme.inkGhost}`,
                     animation: "popIn 0.4s cubic-bezier(0.34,1.56,0.64,1)",
-                    border: winnerTeam !== null ? `1.5px solid ${TEAM_ACCENTS[winnerTeam]}` : undefined,
                   }}>
                     {winnerTeam !== null ? (
-                      <div style={{ display: "flex", gap: 2 }}>
+                      <div style={{ display: "flex", gap: 3 }}>
                         {TEAM_SLOTS[winnerTeam].map(s => (
                           <PlayerMark key={s} player={PLAYERS[s]} size={14} tone={theme.bg1} bg={theme.ink} />
                         ))}
                       </div>
                     ) : (
-                      <PlayerMark player={winnerColor} size={20} tone={theme.bg1} bg={theme.ink} />
+                      <PlayerMark player={winnerColor} size={22} tone={theme.bg1} bg={theme.ink} />
                     )}
                   </div>
                 )}
-                <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.3px", color: theme.ink }}>
+                <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.3px", color: theme.ink }}>
                   {isDraw ? "It's a draw!" : (winnerTeam !== null ? `${TEAM_NAMES[winnerTeam]} wins!` : `${winnerColor.name} wins!`)}
                 </span>
               </div>
@@ -1220,16 +1232,19 @@ export default function MegaTicTacToe() {
               )}
             </div>
           )}
-          <div style={{ display: "flex", gap: 6, padding: "0 16px 10px" }}>
+          <div style={{ display: "flex", gap: 6, padding: "0 16px 10px", position: "relative" }}>
             {teamsOn ? TEAM_SLOTS.map((slots, ti) => {
               const isActive = isReview ? winnerTeam === ti : currentTeam === ti;
+              const isLoser = isReview && !isDraw && winnerTeam !== null && winnerTeam !== ti;
               const accent = TEAM_ACCENTS[ti];
               return (
               <div key={ti} style={{
                 flex: 1, display: "flex", alignItems: "center", gap: 8,
-                padding: "6px 10px", borderRadius: 12, transition: "all 0.2s",
-                background: isActive ? theme.inkGhost : theme.glassFill,
+                padding: "6px 10px", borderRadius: 12, transition: "all 0.25s",
+                background: isReview ? (isActive ? `${accent}18` : 'transparent') : (isActive ? theme.inkGhost : theme.glassFill),
                 border: `1.2px solid ${isActive ? accent : `${accent}55`}`,
+                boxShadow: isReview && isActive ? `0 4px 14px ${accent}33` : undefined,
+                opacity: isLoser ? 0.55 : 1,
                 backdropFilter: "blur(14px) saturate(180%)", WebkitBackdropFilter: "blur(14px) saturate(180%)",
               }}>
                 <div style={{ display: "flex", gap: 2 }}>
@@ -1263,12 +1278,15 @@ export default function MegaTicTacToe() {
               );
             }) : Array.from({ length: config.playerCount }).map((_, i) => {
               const active = isReview ? i === winner : i === cp;
+              const isLoser = isReview && !isDraw && winner !== null && i !== winner;
               return (
               <div key={i} style={{
                 flex: 1, display: "flex", alignItems: "center", gap: 8,
-                padding: "6px 10px", borderRadius: 12, transition: "all 0.2s",
-                background: active ? theme.inkGhost : theme.glassFill,
+                padding: "6px 10px", borderRadius: 12, transition: "all 0.25s",
+                background: isReview ? (active ? `${theme.inkGhost}` : 'transparent') : (active ? theme.inkGhost : theme.glassFill),
                 border: `0.5px solid ${active ? theme.hairStrong : theme.glassBorder}`,
+                boxShadow: isReview && active ? `0 4px 14px ${theme.inkGhost}` : undefined,
+                opacity: isLoser ? 0.55 : 1,
                 backdropFilter: "blur(14px) saturate(180%)", WebkitBackdropFilter: "blur(14px) saturate(180%)",
               }}>
                 <PlayerMark player={PLAYERS[i]} size={14} />
