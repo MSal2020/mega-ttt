@@ -262,8 +262,8 @@ export function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
       <div className="glass-bg" />
       <div style={{ position: "relative", zIndex: 1, minHeight: "100dvh", display: "flex", alignItems: isWide ? "center" : "stretch", justifyContent: "center", padding: isWide ? "40px 56px" : 20, userSelect: "none" }}>
       <div style={{
-        width: "100%", maxWidth: isWide ? 1200 : 440,
-        display: "grid", gridTemplateColumns: isWide ? "1.1fr 1fr" : "1fr",
+        width: "100%", maxWidth: isWide ? 1200 : 440, minWidth: 0,
+        display: "grid", gridTemplateColumns: isWide ? "1.1fr 1fr" : "minmax(0, 1fr)",
         gap: isWide ? 64 : 0, alignItems: "stretch",
         animation: "slideUp 0.4s cubic-bezier(0.16,1,0.3,1)",
         minHeight: isWide ? undefined : "calc(100dvh - 40px)",
@@ -288,7 +288,7 @@ export function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
             </div>
           </div>
         )}
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: isWide ? "center" : "flex-start", width: "100%", maxWidth: isWide ? 460 : "none", marginLeft: isWide ? 0 : "auto", marginRight: isWide ? 0 : "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: isWide ? "center" : "flex-start", width: "100%", minWidth: 0, maxWidth: isWide ? 460 : "none", marginLeft: isWide ? 0 : "auto", marginRight: isWide ? 0 : "auto" }}>
         {!isWide && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <button className="btn-hover" onClick={leaveLobby} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: t.inkMuted }}>←</button>
