@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { PLAYERS, POWERS, getWinConditions } from "../lib/gameLogic.js";
-import { useTheme } from "./theme.js";
+import { useTheme, ThemeCtx, themeVars } from "./theme.js";
+import { SettingsIcon } from "./Icons.jsx";
 import { PlayerMark, Collapse } from "./widgets.jsx";
 import { Tutorial, HeroShapeGrid } from "./screens.jsx";
 
@@ -65,13 +66,6 @@ export function Setup({ onStart, onOnline, onStats, onSettings, onResume, dark, 
     return () => window.removeEventListener("resize", on);
   }, []);
 
-  const gearIcon = (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block", overflow: "visible" }}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.36.14.68.36.94.65.26.29.45.64.55 1.02.04.15.06.31.06.47" />
-    </svg>
-  );
-
   return (
     <>
       <div className="glass-bg" />
@@ -101,12 +95,12 @@ export function Setup({ onStart, onOnline, onStats, onSettings, onResume, dark, 
         {!isWide && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.03em", textAlign: "center", color: t.ink }}>Mega Tic Tac Toe</h1>
-            <button onClick={onSettings} title="Settings" aria-label="Settings" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{gearIcon}</button>
+            <button onClick={onSettings} title="Settings" aria-label="Settings" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><SettingsIcon color={t.inkMuted} size={18} /></button>
           </div>
         )}
         {isWide && (
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
-            <button onClick={onSettings} title="Settings" aria-label="Settings" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{gearIcon}</button>
+            <button onClick={onSettings} title="Settings" aria-label="Settings" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><SettingsIcon color={t.inkMuted} size={18} /></button>
           </div>
         )}
         {!isWide && <p style={{ fontSize: 14, color: t.inkMuted, textAlign: "center", marginTop: 6 }}>Customise your game</p>}

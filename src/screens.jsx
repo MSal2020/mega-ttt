@@ -7,6 +7,7 @@ import {
   hapticEnabled, setHapticEnabled, reducedMotion, setReducedMotion,
 } from "./sounds.js";
 import { getStats, clearStats, getTotalGames, getTotalWins, getWinRate } from "./stats.js";
+import { LocalIcon, AIIcon, OnlineIcon } from "./Icons.jsx";
 
 export function StatsScreen({ onBack }) {
   const t = useTheme();
@@ -16,9 +17,9 @@ export function StatsScreen({ onBack }) {
   const rate = getWinRate(stats);
 
   const modes = [
-    { key: "local", label: "Local", icon: "👥" },
-    { key: "ai", label: "vs AI", icon: "🤖" },
-    { key: "online", label: "Online", icon: "🌐" },
+    { key: "local", label: "Local", icon: LocalIcon },
+    { key: "ai", label: "vs AI", icon: AIIcon },
+    { key: "online", label: "Online", icon: OnlineIcon },
   ];
 
   const resultTone = { win: t.ink, loss: t.inkMuted, draw: t.inkFaint };
@@ -60,7 +61,7 @@ export function StatsScreen({ onBack }) {
               const s = stats[m.key] || { wins: 0, losses: 0, draws: 0, games: 0 };
               return (
                 <div key={m.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 12, background: t.glassFillSolid, border: `0.5px solid ${t.hair}`, marginBottom: 4 }}>
-                  <span style={{ fontSize: 16 }}>{m.icon}</span>
+                  <m.icon color={t.inkMuted} size={16} />
                   <span style={{ fontSize: 14, fontWeight: 500, flex: 1, color: t.ink }}>{m.label}</span>
                   <span style={{ fontSize: 12, color: t.ink, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{s.wins}<span style={{ color: t.inkFaint, fontWeight: 500 }}>W</span></span>
                   <span style={{ fontSize: 12, color: t.inkMuted, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{s.losses}<span style={{ color: t.inkFaint, fontWeight: 500 }}>L</span></span>
