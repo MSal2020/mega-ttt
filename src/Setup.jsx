@@ -66,7 +66,7 @@ export function Setup({ onStart, onOnline, onStats, onSettings, onResume, dark, 
   }, []);
 
   const gearIcon = (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block", overflow: "visible" }}>
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.36.14.68.36.94.65.26.29.45.64.55 1.02.04.15.06.31.06.47" />
     </svg>
@@ -85,9 +85,7 @@ export function Setup({ onStart, onOnline, onStats, onSettings, onResume, dark, 
       }}>
         {isWide && (
           <div style={{ display: "flex", flexDirection: "column", gap: 28, minHeight: 620 }}>
-            <div style={{ display: "flex", justifyContent: "flex-start" }}>
-              <button onClick={() => setShowTutorial(true)} title="How to play" style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7 }}>?</button>
-            </div>
+            <div style={{ display: "flex", justifyContent: "flex-start" }} />
             <div>
               <h1 style={{ fontSize: "clamp(48px, 5.4vw, 72px)", fontWeight: 800, letterSpacing: "-0.045em", color: t.ink, lineHeight: 0.92 }}>Mega<br />Tic Tac Toe</h1>
               <p style={{ fontSize: 16, color: t.inkMuted, marginTop: 18, maxWidth: 420, lineHeight: 1.5 }}>
@@ -102,7 +100,6 @@ export function Setup({ onStart, onOnline, onStats, onSettings, onResume, dark, 
         <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", width: "100%", maxWidth: isWide ? 460 : "none", marginLeft: isWide ? 0 : "auto", marginRight: isWide ? 0 : "auto" }}>
         {!isWide && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <button onClick={() => setShowTutorial(true)} title="How to play" style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7 }}>?</button>
             <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.03em", textAlign: "center", color: t.ink }}>Mega Tic Tac Toe</h1>
             <button onClick={onSettings} title="Settings" aria-label="Settings" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: t.inkMuted, opacity: 0.7, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{gearIcon}</button>
           </div>

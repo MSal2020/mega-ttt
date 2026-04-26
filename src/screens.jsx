@@ -8,7 +8,7 @@ import {
 } from "./sounds.js";
 import { getStats, clearStats, getTotalGames, getTotalWins, getWinRate } from "./stats.js";
 
-export function StatsScreen({ onBack, dark, setDark }) {
+export function StatsScreen({ onBack }) {
   const t = useTheme();
   const [stats, setStats] = useState(getStats);
   const total = getTotalGames(stats);
@@ -37,7 +37,6 @@ export function StatsScreen({ onBack, dark, setDark }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <button className="btn-hover" onClick={onBack} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "2px 6px", color: t.inkMuted }}>←</button>
             <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.5px", textAlign: "center", color: t.ink, flex: 1 }}>Stats</h1>
-            <button onClick={() => setDark(d => !d)} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: 4, color: t.inkMuted }}>{dark ? "☀" : "☾"}</button>
           </div>
 
           {/* Summary */}

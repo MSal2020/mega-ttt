@@ -1087,7 +1087,7 @@ export default function MegaTicTacToe() {
 
   const themedCss = `:root { ${themeVars(theme)} }\n${css}`;
   if (screen === "setup") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><Setup onStart={startGame} onOnline={() => setScreen("online-lobby")} onStats={() => setScreen("stats")} onSettings={() => setScreen("settings")} onResume={resumeGame} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
-  if (screen === "stats") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><StatsScreen onBack={() => setScreen("setup")} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
+  if (screen === "stats") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><StatsScreen onBack={() => setScreen("setup")} /></ThemeCtx.Provider>;
   if (screen === "settings") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><SettingsScreen onBack={() => setScreen("setup")} onReplayTutorial={() => { try { localStorage.removeItem("mtt-tutorial-seen"); } catch {} setScreen("setup"); }} dark={dark} setDark={setDark} /></ThemeCtx.Provider>;
   if (screen === "online-lobby") return <ThemeCtx.Provider value={theme}><style>{themedCss}</style><OnlineLobby onBack={() => { if (onlineConn) { onlineConn.close(); setOnlineConn(null); } try { const u = new URL(window.location.href); u.searchParams.delete("room"); window.history.replaceState({}, "", u.toString()); } catch {} setScreen("setup"); }} onGameStart={handleOnlineGameStart} /></ThemeCtx.Provider>;
 
