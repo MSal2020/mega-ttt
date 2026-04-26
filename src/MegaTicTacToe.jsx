@@ -824,6 +824,7 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
   // Explicit "Back" button handles closing.
 
   const isHost = you === 0;
+  const isSpectator = you === -1;
   const seatedPlayers = players.filter(p => p.slot >= 0);
   const opponentJoined = seatedPlayers.length >= playerCount;
 
@@ -1163,28 +1164,30 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
               </div>
             )}
 
-            {/* Your name (editable in-lobby) */}
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: t.inkMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Your Name</div>
-              <input
-                type="text"
-                placeholder="Enter your name"
-                maxLength={20}
-                value={playerName}
-                onChange={e => {
-                  const v = e.target.value;
-                  setPlayerName(v);
-                  localStorage.setItem("mtt-player-name", v);
-                  const trimmed = v.trim();
-                  if (conn && trimmed) conn.rename(trimmed);
-                }}
-                style={{
-                  width: "100%", padding: "8px 12px", borderRadius: 12, border: `0.5px solid ${t.hair}`,
-                  fontSize: 14, fontWeight: 500, fontFamily: "inherit", background: t.glassFillSolid, color: t.ink,
-                  outline: "none", boxSizing: "border-box",
-                }}
-              />
-            </div>
+            {/* Your name (editable in-lobby) — hidden for spectators */}
+            {!isSpectator && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: t.inkMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Your Name</div>
+                <input
+                  type="text"
+                  placeholder="Enter your name"
+                  maxLength={20}
+                  value={playerName}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setPlayerName(v);
+                    localStorage.setItem("mtt-player-name", v);
+                    const trimmed = v.trim();
+                    if (conn && trimmed) conn.rename(trimmed);
+                  }}
+                  style={{
+                    width: "100%", padding: "8px 12px", borderRadius: 12, border: `0.5px solid ${t.hair}`,
+                    fontSize: 14, fontWeight: 500, fontFamily: "inherit", background: t.glassFillSolid, color: t.ink,
+                    outline: "none", boxSizing: "border-box",
+                  }}
+                />
+              </div>
+            )}
 
             {/* Players — hidden on wide (already in hero presence) */}
             {!isWide && (
@@ -1375,11 +1378,13 @@ function OnlineLobby({ onBack, onGameStart, dark, setDark }) {
               </>
             )}
 
-            {/* Guest: waiting for host to start */}
+            {/* Guest / spectator: waiting for host to start */}
             {!isHost && status === "connected" && (
               <div style={{ textAlign: "center", padding: "16px 0" }}>
                 <div style={{ fontSize: 14, color: t.inkMuted }}>
-                  {opponentJoined ? "Waiting for host to start..." : "Connecting..."}
+                  {isSpectator
+                    ? (opponentJoined ? "Watching — game starts when host begins." : "Watching this room — waiting for players…")
+                    : (opponentJoined ? "Waiting for host to start..." : "Connecting...")}
                 </div>
                 <div style={{ marginTop: 12, display: "flex", justifyContent: "center", gap: 4 }}>
                   {[0, 1, 2].map(i => (
@@ -2462,6 +2467,9 @@ export default function MegaTicTacToe() {
   const [emoteFeed, setEmoteFeed] = useState([]); // [{id, slot, name, emote, at}]
   const [rematchVote, setRematchVote] = useState({ votedSlots: [], needed: 0, count: 0 });
   const onlineConnRef = useRef(null);
+  // Latest server snapshot — used to push the pre-move state to `history`
+  // so the review scrubber works for online games (matches local-game flow).
+  const onlineSnapshotRef = useRef(null);
   /** Longer-than-needed line: player must pick a contiguous segment (sync with server `pendingLinePick`). */
   const [pendingLinePick, setPendingLinePick] = useState(null);
 
@@ -2692,6 +2700,20 @@ export default function MegaTicTacToe() {
       setZoom(Math.min(52, Math.max(22, Math.floor(vw / msg.config.gridSize))));
     }
 
+    // Refresh the snapshot ref so the next move-applied can push the prior
+    // state into review history.
+    const prev = onlineSnapshotRef.current;
+    onlineSnapshotRef.current = {
+      board: msg.board ? cloneBoard(msg.board) : prev?.board,
+      cp: msg.cp ?? prev?.cp ?? 0,
+      turn: msg.turn ?? prev?.turn ?? 1,
+      globalTurn: msg.globalTurn ?? prev?.globalTurn ?? 1,
+      scores: msg.scores ? { ...msg.scores } : (prev?.scores || {}),
+      cooldowns: msg.cooldowns ? { ...msg.cooldowns } : (prev?.cooldowns || {}),
+      playerTurns: msg.playerTurns ? { ...msg.playerTurns } : (prev?.playerTurns || {}),
+      lastMove: msg.lastMove !== undefined ? msg.lastMove : prev?.lastMove,
+    };
+
     if (msg.phase === "playing") { setScreen("online-game"); setRematchVote({ votedSlots: [], needed: 0, count: 0 }); }
     else if (msg.phase === "review") setScreen("online-review");
     else if (msg.phase === "lobby") setScreen("online-lobby");
@@ -2779,6 +2801,29 @@ export default function MegaTicTacToe() {
       if (msg.type === "spectator-renamed") {
         setSpectators(prev => prev.map(s => s.name === msg.oldName ? { name: msg.name } : s));
         return;
+      }
+      // Push the prior snapshot to review history *before* applying the new
+      // server state. Mirrors the per-move history we keep for local games so
+      // the replay scrubber works in online review too.
+      if (msg.type === "move-applied") {
+        const prior = onlineSnapshotRef.current;
+        if (prior?.board) {
+          setHistory(h => [...h, {
+            board: prior.board,
+            cp: prior.cp,
+            turn: prior.turn,
+            globalTurn: prior.globalTurn,
+            scores: prior.scores,
+            cooldowns: prior.cooldowns,
+            playerTurns: prior.playerTurns,
+            lastMove: prior.lastMove,
+          }]);
+        }
+      }
+      if (msg.type === "game-started") {
+        // Fresh game (or rematch) — clear any prior review history.
+        setHistory([]);
+        setReplayIdx(null);
       }
       // Full state updates
       if (msg.phase !== undefined || msg.board !== undefined || msg.players !== undefined || msg.spectators !== undefined) {
@@ -3726,14 +3771,16 @@ export default function MegaTicTacToe() {
               backdropFilter: "blur(14px) saturate(180%)", WebkitBackdropFilter: "blur(14px) saturate(180%)",
               fontFamily: "inherit",
             }} title="Share board image">Share</button>
-            <button className="btn-hover" disabled={isOnline && rematchVote.votedSlots.includes(onlineSlot)} onClick={() => isOnline && onlineConnRef.current ? onlineConnRef.current.rematch() : startGame(config)} style={{
-              flex: 1, padding: 12, borderRadius: 12,
-              border: `0.5px solid ${theme.ink}`,
-              fontSize: 14, fontWeight: 600, cursor: "pointer",
-              background: theme.ink, color: theme.mode === "dark" ? theme.bg1 : "#FAF7F0",
-              boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
-              fontFamily: "inherit", opacity: isOnline && rematchVote.votedSlots.includes(onlineSlot) ? 0.6 : 1,
-            }}>{isOnline ? (rematchVote.votedSlots.includes(onlineSlot) ? `Waiting ${rematchVote.count}/${rematchVote.needed}` : (rematchVote.needed > 0 ? `Rematch ${rematchVote.count}/${rematchVote.needed}` : "Rematch")) : "Play Again"}</button>
+            {(!isOnline || onlineSlot >= 0) && (
+              <button className="btn-hover" disabled={isOnline && rematchVote.votedSlots.includes(onlineSlot)} onClick={() => isOnline && onlineConnRef.current ? onlineConnRef.current.rematch() : startGame(config)} style={{
+                flex: 1, padding: 12, borderRadius: 12,
+                border: `0.5px solid ${theme.ink}`,
+                fontSize: 14, fontWeight: 600, cursor: "pointer",
+                background: theme.ink, color: theme.mode === "dark" ? theme.bg1 : "#FAF7F0",
+                boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
+                fontFamily: "inherit", opacity: isOnline && rematchVote.votedSlots.includes(onlineSlot) ? 0.6 : 1,
+              }}>{isOnline ? (rematchVote.votedSlots.includes(onlineSlot) ? `Waiting ${rematchVote.count}/${rematchVote.needed}` : (rematchVote.needed > 0 ? `Rematch ${rematchVote.count}/${rematchVote.needed}` : "Rematch")) : "Play Again"}</button>
+            )}
           </div>
         ) : isPow && (
           <div key={cp} style={{
